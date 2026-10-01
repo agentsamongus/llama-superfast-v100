@@ -55,6 +55,7 @@ public:
         }
 
         jrnl.restart();
+        cjrnl.restart();
     }
 
     void reset_shift() {
@@ -173,6 +174,7 @@ public:
             const auto idx = i + j;
 
             jrnl.add2(pos[idx], other.pos[j]);
+            cjrnl.add(idx);
 
             if (pos[idx] == -1 && other.pos[j] != -1) {
                 used.insert(i + j);
@@ -206,6 +208,7 @@ public:
             const auto idx = idxs[j];
 
             jrnl.add2(pos[idx], other.pos[j]);
+            cjrnl.add(idx);
 
             if (pos[idx] == -1 && other.pos[j] != -1) {
                 used.insert(idx);
@@ -237,6 +240,7 @@ public:
         assert(pos[i] != -1);
 
         jrnl.add(pos[i]);
+        cjrnl.add(i);
 
         seq_pos_rm(i);
         seq[i].reset();
@@ -257,6 +261,7 @@ public:
         assert(seq_id >= 0);
 
         jrnl.add(pos[i]);
+        cjrnl.add(i);
 
         seq[i].reset(seq_id);
         seq_pos_dec(seq_id, i);
@@ -277,6 +282,8 @@ public:
     // return true if the cell becomes empty (i.e. it did not contain seq_id before the call)
     bool seq_keep(uint32_t i, llama_seq_id seq_id) {
         assert(i < pos.size());
+
+        cjrnl.add(i);
 
         if (seq[i].test(seq_id)) {
             if (seq[i].count() > 1) {
@@ -399,6 +406,36 @@ public:
         return jrnl.pos[k - jrnl.base];
     }
 
+    // [TAG_KQ_MASK_DEVICE] ticket T3: the same kind of journal, of cell indices instead of positions, for a consumer
+    // that mirrors the cells on the device (llama_kv_cache's cell mirror for the KQ mask). Every change to a cell's
+    // position, sequences or ext records the cell. Same epoch/base protocol as the position journal above
+    void cjrnl_enable() {
+        cjrnl.on = true;
+        cjrnl.restart();
+    }
+
+    bool cjrnl_enabled() const {
+        return cjrnl.on;
+    }
+
+    uint64_t cjrnl_epoch() const {
+        return cjrnl.epoch;
+    }
+
+    uint64_t cjrnl_base() const {
+        return cjrnl.base;
+    }
+
+    uint64_t cjrnl_end() const {
+        return cjrnl.base + cjrnl.idx.size();
+    }
+
+    uint32_t cjrnl_get(uint64_t k) const {
+        assert(k >= cjrnl.base && k < cjrnl_end());
+
+        return cjrnl.idx[k - cjrnl.base];
+    }
+
     // note: call only if the cell is not empty and the seq_id is not in the cell
     void seq_add(uint32_t i, llama_seq_id seq_id) {
         assert(i < pos.size());
@@ -406,6 +443,7 @@ public:
         assert(!seq[i].test(seq_id));
 
         jrnl.add(pos[i]);
+        cjrnl.add(i);
 
         seq[i].set(seq_id);
         seq_pos_inc(seq_id, i);
@@ -490,6 +528,7 @@ public:
         assert(seq[i].none());
 
         jrnl.add(p);
+        cjrnl.add(i);
 
         pos[i] = p;
 
@@ -498,6 +537,7 @@ public:
 
     void ext_set(uint32_t i, llama_kv_cell_ext p) {
         assert(i < ext.size());
+        cjrnl.add(i);
         ext[i] = p;
     }
 
@@ -511,6 +551,7 @@ public:
         seq_pos_rm(i);
 
         jrnl.add2(pos[i], pos[i] + d);
+        cjrnl.add(i);
 
         pos[i]   += d;
         shift[i] += d;
@@ -544,6 +585,7 @@ public:
         seq_pos_rm(i);
 
         jrnl.add2(p_old, p_old/d);
+        cjrnl.add(i);
 
         pos[i]   /= d;
         shift[i] += p_old - pos[i];
@@ -615,6 +657,50 @@ private:
     };
 
     journal jrnl;
+
+    // [TAG_KQ_MASK_DEVICE] the cell-index journal, same semantics as journal
+    struct cell_journal {
+        static constexpr size_t cap = 1u << 16;
+
+        bool     on    = false;
+        uint64_t epoch = journal::next_epoch();
+        uint64_t base  = 0;
+
+        std::vector<uint32_t> idx;
+
+        cell_journal() = default;
+
+        cell_journal(const cell_journal & other) : on(other.on) {}
+
+        // a consumer that enabled the journal on these cells keeps it through an assignment
+        cell_journal & operator=(const cell_journal & other) {
+            on = on || other.on;
+            restart();
+
+            return *this;
+        }
+
+        void restart() {
+            epoch = journal::next_epoch();
+            base  = 0;
+            idx.clear();
+        }
+
+        void add(uint32_t i) {
+            if (!on) {
+                return;
+            }
+
+            if (idx.size() >= cap) {
+                base += idx.size();
+                idx.clear();
+            }
+
+            idx.push_back(i);
+        }
+    };
+
+    cell_journal cjrnl;
 
     bool has_shift = false;
 

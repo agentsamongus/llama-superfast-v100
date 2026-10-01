@@ -51,5 +51,5 @@ const llama_tokens * common_reasoning_budget_get_end_match(const struct llama_sa
 // Returns true if the transition occurred.
 bool common_reasoning_budget_force(struct llama_sampler * smpl);
 
-// the token the sampler forces on the next row: LLAMA_TOKEN_NULL unless it is forcing
+// [TAG_SPEC_COUPLED] the token the sampler forces on the next row: LLAMA_TOKEN_NULL unless it is forcing (ticket 0058)
 llama_token common_reasoning_budget_forced_token(const struct llama_sampler * smpl);

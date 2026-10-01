@@ -7,7 +7,7 @@ struct ggml_cuda_gated_delta_net_fused_cache {
     int64_t slot_stride; // between rollback slots (0 when K==1)
 };
 
-// Producer chains folded into a gated_delta_net launch (planned by ggml_cuda_plan_gdn_folds): the
+// Producer chains folded into a gated_delta_net launch (ticket 0029, planned by ggml_cuda_plan_gdn_folds): the
 // kernel reads a chain's raw input and repeats its arithmetic, and the chain's nodes are not launched.
 // A null pointer leaves that input unfolded.
 struct ggml_cuda_gdn_fold {
@@ -20,7 +20,7 @@ struct ggml_cuda_gdn_fold {
     float   scale_q = 0.0f, bias_q = 0.0f, scale_k = 0.0f, bias_k = 0.0f;
     // LLAMA_GDN_FUSE_GATES: g = softplus(alpha + dt) * a and beta = sigmoid(beta), dt and a one value per head.
     // alpha and beta are read at their own strides in floats (head, token, sequence): laid out as g and beta are,
-    // or views of one product that computes both (qwen35's merged a/b projection)
+    // or views of one product that computes both (qwen35's merged a/b projection, ticket 0087)
     const float * alpha = nullptr;
     const float * dt    = nullptr;
     const float * a     = nullptr;

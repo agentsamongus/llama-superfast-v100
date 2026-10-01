@@ -36,7 +36,7 @@ void ggml_cuda_op_fill(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     }
 }
 
-// qwen4exp's QSA attention mask in one launch (LLAMA_FOLD_QSA_MASK): FILL(kq_mask, fill) -> SET_ROWS of
+// qwen4exp's QSA attention mask in one launch (ticket 0056, LLAMA_FOLD_QSA_MASK): FILL(kq_mask, fill) -> SET_ROWS of
 // the zero-filled rows at the selected cells -> ADD kq_mask. One block per (token, stream) row: every cell gets
 // fill + mask, then, after a barrier, each selected cell gets zero + mask. The values are converted as fill_kernel,
 // k_set_rows and k_bin_bcast convert them (the fill value on the host, the zero with ggml_cuda_cast, the sum in

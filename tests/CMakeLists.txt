@@ -155,8 +155,8 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     # these tests are disabled on Windows because they use internal functions not exported with LLAMA_API (when building with shared libraries)
     llama_build_and_test(test-unicode.cpp)
     llama_build_and_test(test-sampling.cpp)
-    llama_build_and_test(test-spec-rejection.cpp)
-    llama_build_and_test(test-spec-draft-grammar.cpp ARGS ${PROJECT_SOURCE_DIR}/models/ggml-vocab-qwen35.gguf)
+    llama_build_and_test(test-spec-rejection.cpp) # [TAG_SPEC_REJECTION] ticket 0069
+    llama_build_and_test(test-spec-draft-grammar.cpp ARGS ${PROJECT_SOURCE_DIR}/models/ggml-vocab-qwen35.gguf) # [TAG_SPEC_REJECTION] ticket 0071
     llama_build_and_test(test-reasoning-budget.cpp)
     llama_build_and_test(test-grammar-parser.cpp)
     llama_build_and_test(test-grammar-integration.cpp)

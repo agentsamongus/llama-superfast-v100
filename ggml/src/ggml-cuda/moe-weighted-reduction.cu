@@ -64,7 +64,7 @@ void ggml_cuda_op_moe_weighted_reduction(ggml_backend_cuda_context & ctx,
     CUDA_CHECK(cudaGetLastError());
 }
 
-// The MoE weighted reduction and the shared expert's gated tail in one launch (LLAMA_FOLD_MOE_TAIL):
+// The MoE weighted reduction and the shared expert's gated tail in one launch (ticket 0056, LLAMA_FOLD_MOE_TAIL):
 // dst = moe_weighted_reduction_f32's sum + shexp * sigmoid(gate), where the separate kernels store the sum and
 // shexp_gate_tail_f32 adds to it. The sum is formed with moe_weighted_reduction_f32's statements, and the tail
 // rounds each operation on its own as shexp_gate_tail_f32 does, so dst is bit-identical.

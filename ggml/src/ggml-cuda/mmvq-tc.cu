@@ -1,4 +1,4 @@
-// Volta tensor-core path for the verify's multi-token dense K-quant GEMVs (toggle LLAMA_MMVQ_TC).
+// Volta tensor-core path for the verify's multi-token dense K-quant GEMVs (ticket 0053, toggle LLAMA_MMVQ_TC).
 //
 // At 3 to 8 tokens the dp4a kernels issue a dot product per (row, column) and are instruction-bound on Volta.
 // Here each warp takes 32 rows, dequantizes one superblock of each row to fp16 in registers and runs the
@@ -57,7 +57,7 @@ bool ggml_cuda_mmvq_tc_use(const ggml_tensor * src0, const ggml_tensor * src1, c
         return false;
     }
     // One warp takes 32 rows and walks all of K, so the kernel needs many row tiles to hide its latency. Measured on
-    // a V100: the 248,320-row output head gains at 3 to 8 tokens (at 2 it is 2% slower), while every
+    // a V100 (ticket 0053): the 248,320-row output head gains at 3 to 8 tokens (at 2 it is 2% slower), while every
     // product up to 12,288 rows (attn_qkv, attn_gate, ssm_out, attn_output, attn_k, the shared expert) is slower.
     if (src0->ne[1] < MMVQ_TC_MIN_ROWS) {
         return false;

@@ -1,4 +1,4 @@
-// a drafted token accepted into a copy of the target's sampler must not throw when
+// [TAG_SPEC_REJECTION] (ticket 0071) a drafted token accepted into a copy of the target's sampler must not throw when
 // it does not fit the copy's triggered grammar. The draft proposes its argmax where the copy cannot follow the target,
 // and after a tool call's closing tag the draft's <|im_start|> does not fit: common_sampler_accept threw "Unexpected
 // empty grammar stack", which failed every tool-calling request under LLAMA_SPEC_REJECTION. Checks, on a vocab-only

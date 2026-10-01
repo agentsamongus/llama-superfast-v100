@@ -58,6 +58,7 @@
 #include "ggml-cuda/sum.cuh"
 #include "ggml-cuda/sumrows.cuh"
 #include "ggml-cuda/top-k.cuh"
+#include "ggml-cuda/kq-mask.cuh"
 #include "ggml-cuda/mean.cuh"
 #include "ggml-cuda/tsembd.cuh"
 #include "ggml-cuda/topk-moe.cuh"
@@ -107,7 +108,7 @@
 
 #include "ggml-rtimer.h"
 
-// with LLAMA_ROUND_TIMERS=1, one single-thread kernel at the start and at the end of
+// [TAG_ROUND_TIMERS] (ticket 0089) with LLAMA_ROUND_TIMERS=1, one single-thread kernel at the start and at the end of
 // every graph evaluation (captured into the cuda graph with the rest) writes %globaltimer and a tag (the host's graph
 // label << 1 | end) into a host-mapped ring; ggml_rt_round() collects them. Nothing is launched when it is off.
 struct ggml_cuda_rt_entry { unsigned long long t; unsigned int tag; unsigned int seq; };
@@ -813,7 +814,7 @@ static std::mutex ggml_cuda_lock;
 static std::condition_variable ggml_cuda_lock_cv;
 static std::atomic<int> ggml_cuda_lock_counter;
 
-static void ggml_cuda_qpn_check_log(int device); // LLAMA_QPN_PREP_CHECK's totals
+static void ggml_cuda_qpn_check_log(int device); // ticket 0090, LLAMA_QPN_PREP_CHECK's totals
 
 ggml_backend_cuda_context::~ggml_backend_cuda_context() {
     std::unique_lock<std::mutex> lock(ggml_cuda_lock);
@@ -873,7 +874,7 @@ static bool ggml_backend_buffer_is_cuda(ggml_backend_buffer_t buffer) {
     return buffer->iface.free_buffer == ggml_backend_cuda_buffer_free_buffer;
 }
 
-// load time: repack a weight in a plain CUDA buffer into the tensor-core fragment order, if routed
+// load time (ticket 0078): repack a weight in a plain CUDA buffer into the tensor-core fragment order, if routed
 static bool ggml_backend_cuda_qpn_repack_if(ggml_tensor * t, bool (*eligible)(const ggml_tensor *, int)) {
     if (t == nullptr || t->buffer == nullptr || !ggml_backend_buffer_is_cuda(t->buffer) ||
             ggml_backend_buffer_get_usage(t->buffer) != GGML_BACKEND_BUFFER_USAGE_WEIGHTS) {
@@ -888,16 +889,16 @@ static bool ggml_backend_cuda_qpn_repack_if(ggml_tensor * t, bool (*eligible)(co
 bool ggml_backend_cuda_qpn_repack(ggml_tensor * t) {
     return ggml_backend_cuda_qpn_repack_if(t, ggml_cuda_qpn_eligible);
 }
-// a draft model's weight, by the draft's route table
+// ticket 0096: a draft model's weight, by the draft's route table
 bool ggml_backend_cuda_qpn_repack_draft(ggml_tensor * t) {
     return ggml_backend_cuda_qpn_repack_if(t, ggml_cuda_qpn_eligible_draft);
 }
-// a DFlash2 draft's weight, by its own route table
+// ticket 0101: a DFlash2 draft's weight, by its own route table
 bool ggml_backend_cuda_qpn_repack_dflash(ggml_tensor * t) {
     return ggml_backend_cuda_qpn_repack_if(t, ggml_cuda_qpn_eligible_dflash);
 }
 
-// the GGUF bytes of a repacked weight in a plain CUDA buffer, into host memory
+// (ticket 0082) the GGUF bytes of a repacked weight in a plain CUDA buffer, into host memory
 bool ggml_backend_cuda_qpn_unpack(const ggml_tensor * t, void * host_dst) {
     if (t == nullptr || t->buffer == nullptr || !ggml_backend_buffer_is_cuda(t->buffer)) {
         return false;
@@ -950,7 +951,7 @@ static void ggml_backend_cuda_buffer_set_tensor(ggml_backend_buffer_t buffer, gg
     CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
 }
 
-// the scheduler's user-input uploads without one sync each. the copy goes to the
+// [TAG_UPLOAD_BATCH] ticket 0062: the scheduler's user-input uploads without one sync each. the copy goes to the
 // per-thread stream as in set_tensor; the scheduler calls ggml_backend_cuda_upload_sync once after the split's last
 // upload and before it queues the split's compute, so the data is on the device and the host source is free again
 // at the same point as with set_tensor. returns false when the tensor is not in a plain CUDA buffer (use set_tensor)
@@ -963,6 +964,45 @@ static bool ggml_backend_cuda_upload_nosync(ggml_tensor * tensor, const void * d
     GGML_RT_COUNT("cuda.upload_nosync", 1);
     ggml_cuda_set_device(ctx->device);
     CUDA_CHECK(cudaMemcpyAsync(tensor->data, data, size, cudaMemcpyHostToDevice, cudaStreamPerThread));
+    return true;
+}
+
+// [TAG_KQ_MASK_DEVICE] ticket T3: build a KQ mask on the backend's stream from the KV cells' device mirror (see
+// llama_kv_cache::set_input_kq_mask_device). false when the tensors are not what the kernel handles (the caller then
+// writes the mask on the host)
+static bool ggml_backend_cuda_kq_mask(ggml_backend_t backend, ggml_tensor * mask, ggml_tensor * cells,
+        const int32_t * p, const int32_t * py, const int32_t * px, int32_t n_tokens, bool use_2d,
+        const int32_t * upd, int32_t upd_lo, int32_t upd_n) {
+    if (backend == nullptr || !ggml_backend_is_cuda(backend) || mask == nullptr || cells == nullptr) {
+        return false;
+    }
+    if (mask->type != GGML_TYPE_F16 || !ggml_is_contiguous(mask) || mask->view_src != nullptr || mask->buffer == nullptr ||
+            !ggml_backend_buffer_is_cuda(mask->buffer) || mask->ne[1] != n_tokens || mask->ne[2] != 1 || mask->ne[3] != 1) {
+        return false;
+    }
+    if (cells->type != GGML_TYPE_I32 || cells->buffer == nullptr || !ggml_backend_buffer_is_cuda(cells->buffer) || cells->ne[0] % 3 != 0) {
+        return false;
+    }
+    if (n_tokens <= 0 || n_tokens > KQM_MAX_TOKENS) {
+        return false;
+    }
+
+    ggml_backend_cuda_context * ctx = (ggml_backend_cuda_context *) backend->context;
+    const int dev_mask  = ((ggml_backend_cuda_buffer_context *) mask->buffer->context)->device;
+    const int dev_cells = ((ggml_backend_cuda_buffer_context *) cells->buffer->context)->device;
+    if (dev_mask != ctx->device || dev_cells != ctx->device) {
+        return false;
+    }
+
+    const int64_t kv_size = cells->ne[0] / 3;
+    if (mask->ne[0] > kv_size) {
+        return false;
+    }
+
+    GGML_RT_SCOPE("cuda.kq_mask");
+    ggml_cuda_set_device(ctx->device);
+    ggml_cuda_kq_mask(ctx->stream(), (half *) mask->data, mask->ne[0], (int32_t *) cells->data, kv_size,
+            p, py, px, n_tokens, use_2d, upd, upd_lo, upd_n);
     return true;
 }
 
@@ -1906,7 +1946,7 @@ static bool ggml_cuda_should_fuse_mul_mat(const ggml_tensor * ffn_up,
         return false;
     }
 
-    // a repacked weight is read only by ggml_cuda_mul_mat_qpn, never by a fused kernel
+    // a repacked weight (ticket 0078) is read only by ggml_cuda_mul_mat_qpn, never by a fused kernel
     if (ggml_cuda_qpn_is_repacked(ffn_up->src[0]) || ggml_cuda_qpn_is_repacked(ffn_gate->src[0])) {
         return false;
     }
@@ -2024,7 +2064,7 @@ static bool ggml_cuda_should_fuse_mul_mat_vec_q(const ggml_tensor * tensor) {
                                    ggml_nbytes(src0) != ggml_backend_buffer_get_alloc_size(src0->buffer, src0) &&
                                    src0->view_src;
 
-    if (ggml_cuda_qpn_is_repacked(src0)) { // read only by ggml_cuda_mul_mat_qpn
+    if (ggml_cuda_qpn_is_repacked(src0)) { // ticket 0078: read only by ggml_cuda_mul_mat_qpn
         return false;
     }
 
@@ -2054,12 +2094,12 @@ static bool ggml_cuda_qpn_sib_launch(ggml_backend_cuda_context & ctx, ggml_tenso
 static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
     GGML_TENSOR_BINARY_OP_LOCALS
 
-    // a weight repacked at load into the tensor-core fragment order: the tensor-core kernel up to
+    // a weight repacked at load into the tensor-core fragment order (ticket 0078): the tensor-core kernel up to
     // GGML_CUDA_QPN_MAX_TOKENS tokens, else fp16 through cuBLAS exactly as a quantized weight goes on this GPU
     if (ggml_cuda_qpn_is_repacked(src0)) {
         GGML_ASSERT(src1->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32);
-        if (ne11 <= GGML_CUDA_QPN_MAX_TOKENS && ne12 == 1 && ne13 == 1) {
-            if (ggml_cuda_qpn_sib_launch(ctx, dst)) { // with its sibling on the same input, in one launch
+        if (ne11 <= ggml_cuda_qpn_max_tokens() && ne12 == 1 && ne13 == 1) {
+            if (ggml_cuda_qpn_sib_launch(ctx, dst)) { // with its sibling on the same input, in one launch (ticket 0091)
                 return;
             }
             ggml_cuda_mul_mat_qpn(ctx, src0, src1, dst);
@@ -2103,7 +2143,7 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
     const bool f32_pedantic = src0->type == GGML_TYPE_F32 &&
         ggml_prec(dst->op_params[0]) == GGML_PREC_F32_PEDANTIC;
 
-    // this product and its later siblings in one launch
+    // this product and its later siblings in one launch (ticket 0046)
     if (src0->type == GGML_TYPE_BF16 && ggml_cuda_sib_gemv_launch(ctx, dst)) {
         return;
     }
@@ -2346,7 +2386,7 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
         nb1, nb2, nb3, stream);
 }
 
-// gated_delta_net launches with folded producer chains (see ggml_cuda_plan_gdn_folds)
+// gated_delta_net launches with folded producer chains (ticket 0029, see ggml_cuda_plan_gdn_folds)
 #define GGML_CUDA_GDN_FOLD_MAX_TOKENS 8
 
 struct ggml_cuda_gdn_fold_plan {
@@ -2360,7 +2400,7 @@ struct ggml_cuda_gdn_fold_plan {
 // planned at the start of every graph evaluation and read only during it, on the evaluating thread
 static thread_local ggml_cuda_gdn_fold_plan ggml_cuda_gdn_folds;
 
-// Glue folds that reach across other nodes (see ggml_cuda_plan_glue_folds): a producer is not
+// Glue folds that reach across other nodes (ticket 0056, see ggml_cuda_plan_glue_folds): a producer is not
 // launched where it stands, and the kernel of a later node that reads it computes it instead.
 struct ggml_cuda_glue_plan {
     std::unordered_set<const ggml_tensor *>                     skip;        // not launched where they stand
@@ -2381,7 +2421,7 @@ static const ggml_cuda_gdn_fold * ggml_cuda_gdn_fold_of(const ggml_tensor * gdn)
 }
 
 static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct ggml_tensor * dst) {
-    // a repacked weight holds no GGUF layout: only MUL_MAT may read it, as src0
+    // a repacked weight (ticket 0078) holds no GGUF layout: only MUL_MAT may read it, as src0
     for (int i = 0; i < GGML_MAX_SRC; ++i) {
         if (ggml_cuda_qpn_is_repacked(dst->src[i]) && !(dst->op == GGML_OP_MUL_MAT && i == 0)) {
             GGML_ABORT("%s: op %s reads %s, which is repacked for the tensor-core products (LLAMA_MMVQ_QPN=0 turns the repack off)",
@@ -3877,7 +3917,7 @@ static int ggml_cuda_try_fuse_hc_epilogue(ggml_backend_cuda_context * cuda_ctx, 
 // column window of the concat, then a CPY of it into the slot's row. The CONT of 12-byte rows runs
 // as a 2D memcpy of ~10k rows, so one kernel writes the concat and every slot instead. The shared
 // build_conv_state (qwen35 and the other delta-net models) saves each slot with a CPY straight from
-// the window, which copies the same elements in the same order, so it folds the same way.
+// the window, which copies the same elements in the same order, so it folds the same way (ticket 0084).
 // LLAMA_GDN_CONV_SLOTS=0 keeps the separate nodes.
 static int ggml_cuda_try_fuse_conv_slots(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph * cgraph, int i) {
     static const bool conv_slots = [] {
@@ -3977,7 +4017,7 @@ static int ggml_cuda_try_fuse_conv_slots(ggml_backend_cuda_context * cuda_ctx, g
         return 0;
     }
 
-    // LLAMA_GDN_FUSE_CONV: the conv that reads this concat, SSM_CONV(concat, w) -> SILU, is computed
+    // LLAMA_GDN_FUSE_CONV (ticket 0029): the conv that reads this concat, SSM_CONV(concat, w) -> SILU, is computed
     // by the same threads while they hold each row, and its two nodes are not launched. It is looked for past the
     // slot saves, views, nodes folded into a gated_delta_net and other launches; since the silu output is now
     // written before those launches, none of them may read or write its bytes. The silu output may overlap the
@@ -3987,8 +4027,8 @@ static int ggml_cuda_try_fuse_conv_slots(ggml_backend_cuda_context * cuda_ctx, g
         const char * e = getenv("LLAMA_GDN_FUSE_CONV");
         return e == nullptr || atoi(e) != 0;
     }();
-    // LLAMA_FOLD_CONV_GATHER: the conv state's GET_ROWS was not launched; the kernel reads the cache rows
-    // instead of src0, whose memory the allocator may then give to a later node such as the silu output
+    // LLAMA_FOLD_CONV_GATHER (ticket 0056): the conv state's GET_ROWS was not launched; the kernel reads the cache rows
+    // instead of src0, whose memory the allocator may then give to a later node such as the silu output (ticket 0084)
     const auto          gather = ggml_cuda_glue_folds.conv_gather.find(node);
     const ggml_tensor * rows   = gather != ggml_cuda_glue_folds.conv_gather.end() ? gather->second : nullptr;
     if (fold_conv) {
@@ -4021,7 +4061,7 @@ static int ggml_cuda_try_fuse_conv_slots(ggml_backend_cuda_context * cuda_ctx, g
         if (ok) {
             // the silu output may overlap the transposed input where each of its elements lands on an input element
             // of the same channel, which the channel's thread has already read: laid out alike with rows of exactly
-            // the channels, and either the same address or (one sequence) offset by whole rows
+            // the channels, and either the same address or (one sequence) offset by whole rows (ticket 0084)
             const size_t    row_b   = silu->nb[1];
             const ptrdiff_t shift   = (const char *) silu->data - (const char *) src1->data;
             const bool alias_src1 = src1->nb[0] == row_b && src1->nb[1] == sizeof(float) &&
@@ -4052,7 +4092,7 @@ static int ggml_cuda_try_fuse_conv_slots(ggml_backend_cuda_context * cuda_ctx, g
         }
     }
 
-    // LLAMA_FOLD_CONV_GATHER: the conv state's GET_ROWS was not launched; read the cache rows here
+    // LLAMA_FOLD_CONV_GATHER (ticket 0056): the conv state's GET_ROWS was not launched; read the cache rows here
     if (rows != nullptr) {
         slots.gather_rows = (const char *) rows->src[0]->data;
         slots.gather_ids  = (const int32_t *) rows->src[1]->data;
@@ -4241,7 +4281,7 @@ static int ggml_cuda_try_fuse_qsa_pool(ggml_backend_cuda_context * cuda_ctx, ggm
     return j - i;
 }
 
-// LLAMA_GDN_FUSE_GATES: a GDN decay gate the fold plan could not put into its gated_delta_net launch,
+// LLAMA_GDN_FUSE_GATES (ticket 0029): a GDN decay gate the fold plan could not put into its gated_delta_net launch,
 // MUL(SOFTPLUS(ADD(alpha, dt)), a) with dt and a one value per row element, runs as one kernel instead of three.
 // The ADD and SOFTPLUS outputs must be read by the next node only; the MUL output may be alpha itself.
 static int ggml_cuda_try_fuse_gdn_gate(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph * cgraph, int i) {
@@ -4290,7 +4330,7 @@ static int ggml_cuda_try_fuse_gdn_gate(ggml_backend_cuda_context * cuda_ctx, ggm
     return k - i;
 }
 
-// Glue folds that reach across other nodes. Each is planned at the start of a graph evaluation:
+// Glue folds that reach across other nodes (ticket 0056). Each is planned at the start of a graph evaluation:
 // a producer is put in the skip set and computed by the kernel of the later node that reads it, which is only
 // correct if nothing but the chain reads the producer (use counts, no output flag) and nothing launched in
 // between overwrites what the fold now reads later than the producer did. Each fold has its own toggle.
@@ -4298,7 +4338,7 @@ static int ggml_cuda_try_fuse_gdn_gate(ggml_backend_cuda_context * cuda_ctx, ggm
 //                             ggml_cuda_try_fuse_conv_slots launches: that kernel reads the cache row itself
 //   LLAMA_FOLD_NORM_GATE=0    the GDN output's gated norm, RMS_NORM -> MUL by the weight, then the z GEMV, then
 //                             SIGMOID(z) -> MUL: the norm runs in the sigmoid's launch, after the GEMV (qwen35's
-//                             SILU(z) -> MUL the same way)
+//                             SILU(z) -> MUL the same way, ticket 0087)
 //   LLAMA_FOLD_MOE_TAIL=0     the MoE weighted reduction (MUL, then the ADD chain over the experts) and, after the
 //                             shared expert, its gated tail SIGMOID -> MUL -> ADD: the sum runs in the tail's launch
 //   LLAMA_FOLD_QSA_MASK=0     qwen4exp's QSA attention mask, FILL(kq_mask, -inf) -> SET_ROWS of a FILL(0) at the
@@ -4388,7 +4428,7 @@ static void ggml_cuda_plan_glue_folds(const ggml_cgraph * cgraph) {
             continue;
         }
         // the sigmoid of the gate and the product: the next few nodes, past the gate's GEMV. qwen35's build_norm_gated
-        // gates with SILU instead; a SILU that is not this product does not end the search
+        // gates with SILU instead (ticket 0087); a SILU that is not this product does not end the search
         int is = -1;
         for (int j = i + 2; j < cgraph->n_nodes - 1 && j <= i + 12; ++j) {
             const ggml_tensor * n = cgraph->nodes[j];
@@ -4593,12 +4633,12 @@ static void ggml_cuda_plan_glue_folds(const ggml_cgraph * cgraph) {
     }
 }
 
-// Glue folds. Each fold launches one kernel in place of a short elementwise chain and repeats
+// Glue folds (ticket 0043). Each fold launches one kernel in place of a short elementwise chain and repeats
 // the chain's arithmetic operation for operation, so its outputs are bit-identical. A chain folds only if its
 // intermediate nodes have no reader outside the chain and no output flag, and no output overlaps an input.
 //   LLAMA_FOLD_HC_NORM=0     DSV4_HC_POST (no comb) -> RMS_NORM -> MUL, the combine and the next mix's norm
 //   LLAMA_FOLD_SHEXP_TAIL=0  UNARY(SIGMOID) -> MUL -> ADD, the shared expert's gate and the sum with the experts
-//   LLAMA_FOLD_ADD_NORM=0    ADD -> RMS_NORM -> MUL, qwen35's residual add and the next trunk norm
+//   LLAMA_FOLD_ADD_NORM=0    ADD -> RMS_NORM -> MUL, qwen35's residual add and the next trunk norm (ticket 0087)
 // Counts the glue folds per graph and logs each distinct graph's counts once (the first fold of the next graph
 // reports the previous one), so a server run at -lv 4 shows how many sites fold.
 static void ggml_cuda_glue_fold_count(const ggml_backend_cuda_context * cuda_ctx, const ggml_cgraph * cgraph, int i, int kind) {
@@ -4670,7 +4710,7 @@ static int ggml_cuda_try_fuse_glue(ggml_backend_cuda_context * cuda_ctx, ggml_cg
     };
     const auto f32_4d1 = [](const ggml_tensor * t) { return t->type == GGML_TYPE_F32 && t->ne[3] == 1 && t->nb[0] == sizeof(float); };
 
-    // LLAMA_FOLD_CONV_GATHER: the conv input whose state gather was not launched
+    // LLAMA_FOLD_CONV_GATHER (ticket 0056): the conv input whose state gather was not launched
     if (node->op == GGML_OP_CONCAT && !ggml_cuda_glue_folds.conv_gather.empty()) {
         const auto it = ggml_cuda_glue_folds.conv_gather.find(node);
         if (it != ggml_cuda_glue_folds.conv_gather.end()) {
@@ -4686,7 +4726,7 @@ static int ggml_cuda_try_fuse_glue(ggml_backend_cuda_context * cuda_ctx, ggml_cg
         }
     }
 
-    // LLAMA_FOLD_ADD_NORM: the residual ADD -> RMS_NORM -> MUL by the norm weight, qwen35's trunk. Both the
+    // LLAMA_FOLD_ADD_NORM (ticket 0087): the residual ADD -> RMS_NORM -> MUL by the norm weight, qwen35's trunk. Both the
     // sum (read again by the next residual ADD) and the normed output are written. The sum and the normed output may
     // each sit in place of an addend of the same layout, and the normed output in place of a sum that nothing else
     // reads (the last layer's, before the output norm); nothing may overlap the weight
@@ -4723,7 +4763,7 @@ static int ggml_cuda_try_fuse_glue(ggml_backend_cuda_context * cuda_ctx, ggml_cg
         }
     }
 
-    // LLAMA_FOLD_ATTN_GATE: CONT of the gate's view -> SIGMOID -> MUL by the attention output, the
+    // LLAMA_FOLD_ATTN_GATE (ticket 0056): CONT of the gate's view -> SIGMOID -> MUL by the attention output, the
     // gate read through the view. The product may sit in place of the attention output, not over the gate's source
     if (fold_attn_gate && node->op == GGML_OP_CONT && i + 2 < cgraph->n_nodes) {
         ggml_tensor * sig = cgraph->nodes[i + 1];
@@ -4746,7 +4786,7 @@ static int ggml_cuda_try_fuse_glue(ggml_backend_cuda_context * cuda_ctx, ggml_cg
         }
     }
 
-    // LLAMA_FOLD_NORM_ROPE: RMS_NORM -> MUL by the weight -> ROPE multi, the q, k and indexer q
+    // LLAMA_FOLD_NORM_ROPE (ticket 0056): RMS_NORM -> MUL by the weight -> ROPE multi, the q, k and indexer q
     // heads; the rotated output may sit in place of the norm's input (same layout), nothing else
     if (fold_norm_rope && node->op == GGML_OP_RMS_NORM && i + 2 < cgraph->n_nodes) {
         ggml_tensor * mul  = cgraph->nodes[i + 1];
@@ -4776,7 +4816,7 @@ static int ggml_cuda_try_fuse_glue(ggml_backend_cuda_context * cuda_ctx, ggml_cg
         }
     }
 
-    // LLAMA_FOLD_IDX_SUM: the QSA indexer's score, RELU over [n_blocks, n_h, n_t, n_stream], then the
+    // LLAMA_FOLD_IDX_SUM (ticket 0056): the QSA indexer's score, RELU over [n_blocks, n_h, n_t, n_stream], then the
     // sum over the heads, CONT of head 0's view and one ADD per further head, in order. Only views and the chain
     // lie between the RELU and the last ADD, which is written once. The RELU's own output is never written, so the
     // sum may sit on it; if the sum sits on the RELU's input, one block reads all of it first, if it can hold it
@@ -4825,7 +4865,7 @@ static int ggml_cuda_try_fuse_glue(ggml_backend_cuda_context * cuda_ctx, ggml_cg
         }
     }
 
-    // LLAMA_FOLD_QSA_MASK: the planned QSA mask, launched at its SET_ROWS, through its ADD
+    // LLAMA_FOLD_QSA_MASK (ticket 0056): the planned QSA mask, launched at its SET_ROWS, through its ADD
     if (node->op == GGML_OP_SET_ROWS && !ggml_cuda_glue_folds.qsa_mask.empty()) {
         const auto it = ggml_cuda_glue_folds.qsa_mask.find(node);
         if (it != ggml_cuda_glue_folds.qsa_mask.end()) {
@@ -4835,7 +4875,7 @@ static int ggml_cuda_try_fuse_glue(ggml_backend_cuda_context * cuda_ctx, ggml_cg
         }
     }
 
-    // LLAMA_FOLD_MOE_TAIL: the planned weighted expert sum, launched with the shared expert's tail
+    // LLAMA_FOLD_MOE_TAIL (ticket 0056): the planned weighted expert sum, launched with the shared expert's tail
     if (node->op == GGML_OP_UNARY && !ggml_cuda_glue_folds.moe_tail.empty()) {
         const auto it = ggml_cuda_glue_folds.moe_tail.find(node);
         if (it != ggml_cuda_glue_folds.moe_tail.end()) {
@@ -4846,7 +4886,7 @@ static int ggml_cuda_try_fuse_glue(ggml_backend_cuda_context * cuda_ctx, ggml_cg
         }
     }
 
-    // LLAMA_FOLD_NORM_GATE: the planned gated norm, launched at its sigmoid
+    // LLAMA_FOLD_NORM_GATE (ticket 0056): the planned gated norm, launched at its sigmoid
     if (node->op == GGML_OP_UNARY && !ggml_cuda_glue_folds.norm_gate.empty()) {
         const auto it = ggml_cuda_glue_folds.norm_gate.find(node);
         if (it != ggml_cuda_glue_folds.norm_gate.end()) {
@@ -5691,7 +5731,7 @@ static int ggml_cuda_try_fuse(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph 
     return 0;
 }
 
-// Fold the small producer chains of each gated_delta_net into its launch. The kernel reads a
+// Fold the small producer chains of each gated_delta_net into its launch (ticket 0029). The kernel reads a
 // chain's raw input and repeats the chain's arithmetic operand for operand, so its results are bit-identical,
 // and the chain's nodes are not launched. A chain folds only if nothing but the chain reads its nodes, and
 // nothing launched between the chain and the gated_delta_net (its own output included) overwrites the raw
@@ -5821,7 +5861,7 @@ static void ggml_cuda_plan_gdn_folds(const ggml_cgraph * cgraph) {
 
         // LLAMA_GDN_FUSE_GATES: g = RESHAPE(MUL(SOFTPLUS(ADD(raw alpha, dt)), a)) and beta = SIGMOID(raw beta), with dt
         // and a one value per head and the raw inputs shaped as g and beta are, read at their own strides (qwen35's
-        // merged a/b product gives two strided views of one tensor). The two fold separately: the raw
+        // merged a/b product gives two strided views of one tensor, ticket 0087). The two fold separately: the raw
         // alpha is often reused by a later projection's output once its ADD has run, and then the three gate nodes
         // run as one kernel in place instead (ggml_cuda_try_fuse_gdn_gate)
         if (fold_gates && decode) {
@@ -5834,7 +5874,7 @@ static void ggml_cuda_plan_gdn_folds(const ggml_cgraph * cgraph) {
             };
             // a raw input's strides in floats over (head, token, sequence), from its dims d0 (head), d0 + 1 (token) and
             // d0 + 2 (sequence) when it is a strided view of that shape; a contiguous one of any shape is read as g and
-            // beta are laid out (as before)
+            // beta are laid out (as before ticket 0087)
             const int64_t T = v->ne[2], S = v->ne[3];
             auto raw_strides = [&](const ggml_tensor * t, int d0, int64_t & s1, int64_t & s2, int64_t & s3) {
                 if (t->type != GGML_TYPE_F32) {
@@ -5889,7 +5929,7 @@ static void ggml_cuda_plan_gdn_folds(const ggml_cgraph * cgraph) {
                 cands.push_back(std::move(c));
             }
             // beta = SIGMOID(raw beta), or SIGMOID(CONT(raw beta)) for qwen35's strided view of the merged a/b product
-            // (the copy folds too, the kernel reading the view the CONT reads)
+            // (ticket 0087): the copy folds too, the kernel reading the view the CONT reads
             const ggml_tensor * sig  = gdn->src[4];
             const ggml_tensor * bin  = unary_is(sig, GGML_UNARY_OP_SIGMOID) ? sig->src[0] : nullptr;
             const ggml_tensor * bcpy = bin != nullptr && bin->op == GGML_OP_CONT && bin->type == GGML_TYPE_F32 &&
@@ -5977,17 +6017,17 @@ static void ggml_cuda_plan_gdn_folds(const ggml_cgraph * cgraph) {
     }
 }
 
-// Quantize a shared input once (F5, toggle LLAMA_Q8_SHARE, default on). Quantized mul_mats that read
+// Quantize a shared input once (ticket 0042, F5, toggle LLAMA_Q8_SHARE, default on). Quantized mul_mats that read
 // the same src1, with nothing launched in between writing over it, share one q8_1 copy of it: the first MMVQ
 // launch quantizes into a small per-device slot and the later ones read that slot. Quantization is deterministic,
 // so every consumer reads the bytes it would have made itself. A consumer that finds its slot not yet filled on
 // its own stream (a different dispatch, another stream) quantizes as before.
 #define GGML_CUDA_Q8_SHARE_SLOTS     16
 #define GGML_CUDA_Q8_SHARE_SLOT_SIZE (64*1024)
-// (LLAMA_QPN_SHARE, default on): the same for products on repacked weights (ggml_cuda_mul_mat_qpn), whose
+// ticket 0086 (LLAMA_QPN_SHARE, default on): the same for products on repacked weights (ggml_cuda_mul_mat_qpn), whose
 // input is prepared as fp16 fragments, range scales and per-32 sums (qpn_prep_kernel) instead of q8_1
 #define GGML_CUDA_QPN_SHARE_MAX_BYTES (128*1024)
-// (LLAMA_QPN_PREP_AT_SOURCE, default on; qpn-source.cuh): when the kernel that produces the input can write
+// ticket 0090 (LLAMA_QPN_PREP_AT_SOURCE, default on; qpn-source.cuh): when the kernel that produces the input can write
 // its prepared form itself, the group starts at that producer's node and holds even a single product, and nobody
 // launches the prep. Its slots are larger: ffn down's input, 17408 columns, takes 290 KB at 8 tokens
 #define GGML_CUDA_QPN_SHARE_SLOT_SIZE (320*1024)
@@ -5997,7 +6037,7 @@ struct ggml_cuda_q8_share_group {
     bool         filled = false;
     cudaStream_t stream = nullptr;
     bool         qpn    = false; // a group of products on repacked weights: a slot of qpn_buf
-    // prepared at source by the node src (nullptr: by its first product), K columns, T tokens; mins: a
+    // ticket 0090: prepared at source by the node src (nullptr: by its first product), K columns, T tokens; mins: a
     // product reads the per-32 sums
     const ggml_tensor * src  = nullptr;
     int64_t             K    = 0;
@@ -6011,7 +6051,7 @@ struct ggml_cuda_q8_share_plan {
     char * qpn_buf = nullptr;
     std::map<std::pair<const ggml_tensor *, const ggml_tensor *>, int> group_of; // (src0, src1) -> group
     std::vector<ggml_cuda_q8_share_group> groups;
-    std::unordered_map<const ggml_tensor *, int> source_of; // producer node -> its prepared-at-source group
+    std::unordered_map<const ggml_tensor *, int> source_of; // ticket 0090: producer node -> its prepared-at-source group
     int64_t n_tokens = 0;
     int     n_consumers = 0;
 };
@@ -6039,7 +6079,7 @@ char * ggml_cuda_q8_share_buffer(const ggml_tensor * src0, const ggml_tensor * s
     return plan.buf + (size_t) g.slot*GGML_CUDA_Q8_SHARE_SLOT_SIZE;
 }
 
-// the prepared-input buffer for a product on a repacked weight if it shares one (else nullptr); *ready:
+// ticket 0086: the prepared-input buffer for a product on a repacked weight if it shares one (else nullptr); *ready:
 // already prepared on this stream
 char * ggml_cuda_qpn_share_buffer(const ggml_tensor * src0, const ggml_tensor * src1, size_t nbytes, cudaStream_t stream, bool * ready) {
     *ready = false;
@@ -6061,7 +6101,7 @@ char * ggml_cuda_qpn_share_buffer(const ggml_tensor * src0, const ggml_tensor * 
     return plan.qpn_buf + (size_t) g.slot*GGML_CUDA_QPN_SHARE_SLOT_SIZE;
 }
 
-// (qpn-source.cuh): a producer's prepared input, and the LLAMA_QPN_PREP_CHECK instrument
+// ticket 0090 (qpn-source.cuh): a producer's prepared input, and the LLAMA_QPN_PREP_CHECK instrument
 static int ggml_cuda_qpn_prep_check() {
     static const int mode = [] { const char * e = getenv("LLAMA_QPN_PREP_CHECK"); return e == nullptr ? 0 : atoi(e); }();
     return mode;
@@ -6210,7 +6250,7 @@ void ggml_cuda_qpn_source_end(const ggml_tensor * out, const int64_t K, cudaStre
 static void ggml_cuda_plan_q8_share(ggml_backend_cuda_context * cuda_ctx, const ggml_cgraph * cgraph) {
     static const bool enabled = [] { const char * e = getenv("LLAMA_Q8_SHARE"); return e == nullptr || atoi(e) != 0; }();
     static const bool qpn_enabled = [] { const char * e = getenv("LLAMA_QPN_SHARE"); return e == nullptr || atoi(e) != 0; }();
-    // needs LLAMA_QPN_SHARE's groups
+    // ticket 0090: needs LLAMA_QPN_SHARE's groups
     static const bool at_source = [] { const char * e = getenv("LLAMA_QPN_PREP_AT_SOURCE"); return e == nullptr || atoi(e) != 0; }();
 
     ggml_cuda_q8_share_plan & plan = ggml_cuda_q8_shares;
@@ -6224,7 +6264,7 @@ static void ggml_cuda_plan_q8_share(ggml_backend_cuda_context * cuda_ctx, const 
         return;
     }
 
-    // src: the node that writes src1 and can write its prepared form, at node first; -1 if none
+    // src (ticket 0090): the node that writes src1 and can write its prepared form, at node first; -1 if none
     struct open_group { const ggml_tensor * src1; int first, last; std::vector<std::pair<const ggml_tensor *, const ggml_tensor *>> uses; bool qpn;
                         int src = -1; bool mins = false; };
     std::vector<open_group> open, done;
@@ -6248,9 +6288,9 @@ static void ggml_cuda_plan_q8_share(ggml_backend_cuda_context * cuda_ctx, const 
                 src1->type == GGML_TYPE_F32 && src1->ne[1]*src1->ne[2]*src1->ne[3] <= MMVQ_MAX_BATCH_SIZE &&
                 src1->ne[0] % QK8_1 == 0 && src1->data != nullptr &&
                 (size_t) (src1->ne[1]*src1->ne[2]*src1->ne[3]*GGML_PAD(src1->ne[0], MATRIX_ROW_PADDING)/QK8_1*sizeof(block_q8_1)) <= GGML_CUDA_Q8_SHARE_SLOT_SIZE &&
-                !ggml_cuda_mmvq_tc_use(src0, src1, n, cuda_ctx->device) && // a tensor-core product quantizes nothing
-                !ggml_cuda_qpn_is_repacked(src0);                           // nor does one on a repacked weight
-        // products on repacked weights of one pass (at most 8 tokens) share the prepared input
+                !ggml_cuda_mmvq_tc_use(src0, src1, n, cuda_ctx->device) && // a tensor-core product (ticket 0053) quantizes nothing
+                !ggml_cuda_qpn_is_repacked(src0);                           // nor does one on a repacked weight (ticket 0078)
+        // ticket 0086: products on repacked weights of one pass (at most 8 tokens) share the prepared input
         const bool qpn = qpn_enabled && n->op == GGML_OP_MUL_MAT && ggml_cuda_qpn_is_repacked(src0) && src1->type == GGML_TYPE_F32 &&
                 src1->data != nullptr && src1->ne[1] <= 8 && src1->ne[2] == 1 && src1->ne[3] == 1 && src1->nb[0] == sizeof(float) &&
                 ggml_cuda_qpn_prep_bytes(src1->ne[0], (int) src1->ne[1]) <= GGML_CUDA_QPN_SHARE_SLOT_SIZE;
@@ -6265,7 +6305,7 @@ static void ggml_cuda_plan_q8_share(ggml_backend_cuda_context * cuda_ctx, const 
             if (!g) {
                 open.push_back({ src1, j, j, {}, qpn });
                 g = &open.back();
-                // the last node before this one that writes src1's memory produces it; the group can be
+                // ticket 0090: the last node before this one that writes src1's memory produces it; the group can be
                 // prepared there if that node's output is exactly src1 (T contiguous rows of K columns). Whether its
                 // kernel can write the prepared form is its launcher's call (ggml_cuda_qpn_source_begin); if it
                 // does not, the first product prepares as before
@@ -6307,8 +6347,8 @@ static void ggml_cuda_plan_q8_share(ggml_backend_cuda_context * cuda_ctx, const 
     std::fill(&slot_free_at[0][0], &slot_free_at[0][0] + 2*GGML_CUDA_Q8_SHARE_SLOTS, -1);
     int n_consumers = 0, n_qpn_groups = 0, n_qpn_consumers = 0, n_src_groups = 0, n_src_consumers = 0;
     for (const open_group & o : done) {
-        // a group prepared at source takes one product; one prepared by its first product needs two, and
-        // keeps the size limit of the shared prepared input
+        // a group prepared at source takes one product (ticket 0090); one prepared by its first product needs two, and
+        // keeps ticket 0086's size limit
         const bool src = o.qpn && o.src >= 0;
         if (!src && (o.uses.size() < 2 || (o.qpn && ggml_cuda_qpn_prep_bytes(o.src1->ne[0], (int) o.src1->ne[1]) > GGML_CUDA_QPN_SHARE_MAX_BYTES))) {
             continue;
@@ -6373,7 +6413,7 @@ static void ggml_cuda_plan_q8_share(ggml_backend_cuda_context * cuda_ctx, const 
     }
 }
 
-// Grouped launches for the small sibling BF16 GEMVs (F8, toggle LLAMA_BF16_GEMV_GROUP, default on).
+// Grouped launches for the small sibling BF16 GEMVs (ticket 0046, F8, toggle LLAMA_BF16_GEMV_GROUP, default on).
 // n_embd-wide BF16 products that read the same activations (the router and the shared-expert gate, GDN alpha and
 // beta, the indexer's q and k) run as one ggml_cuda_mul_mat_vec_bf16_group launch, bit-identical to the separate
 // ones. The siblings are not adjacent, so the launch happens at the first one the walk dispatches normally and
@@ -6616,16 +6656,16 @@ static void ggml_cuda_plan_sib_gemv(ggml_backend_cuda_context * cuda_ctx, const 
     }
 }
 
-// Pairs of products on repacked weights that read the same input (the target design's item 5; toggle
-// LLAMA_QPN_GROUP, default on): GDN qkv with z, ffn up with gate, at the verify widths (3 to 8 tokens; 5 to 8,
+// Pairs of products on repacked weights that read the same input (ticket 0091, the target design's item 5; toggle
+// LLAMA_QPN_GROUP, default on): GDN qkv with z, ffn up with gate, at the verify widths (3 to 8 tokens; 5 to 8 from ticket 0095,
 // LLAMA_QPN_WIDE bit 4, ggml_cuda_qpn_group_ok decides). They run as one
-// ggml_cuda_mul_mat_qpn2 launch at the first one the walk dispatches, and the walk skips the second, exactly as the BF16 siblings
-// (the same rules: the second may run early only if nothing between the two touches its output or
+// ggml_cuda_mul_mat_qpn2 launch at the first one the walk dispatches, and the walk skips the second, exactly as ticket
+// 0046's BF16 siblings (the same rules: the second may run early only if nothing between the two touches its output or
 // overwrites the input). Each product's arithmetic and order are unchanged, so the outputs are bit-identical.
 struct ggml_cuda_qpn_sib_plan {
     int device = -1;
     std::unordered_map<const ggml_tensor *, ggml_tensor *> partner; // first of a pair -> second
-    std::unordered_map<const ggml_tensor *, ggml_tensor *> third;   // first of a triple -> third (the attention input)
+    std::unordered_map<const ggml_tensor *, ggml_tensor *> third;   // first of a triple -> third (ticket 0095: the attention input)
     std::unordered_set<const ggml_tensor *> done;                   // computed early this pass
     int64_t n_tokens = 0;
     int     n_pairs = 0, n_launches = 0;
@@ -6674,7 +6714,8 @@ static void ggml_cuda_plan_qpn_sib(ggml_backend_cuda_context * cuda_ctx, const g
         static std::set<std::tuple<int, int64_t, int, int>> logged;
         std::lock_guard<std::mutex> lock(log_mutex);
         if (logged.insert({ plan.device, plan.n_tokens, plan.n_pairs, plan.n_launches }).second) {
-            GGML_LOG_WARN("%s: CUDA%d at %" PRId64 " tokens: %d pairs of repacked products on one input planned (%d with a third); %d launched together\n", __func__, plan.device, plan.n_tokens, plan.n_pairs, (int) plan.third.size(), plan.n_launches);
+            GGML_LOG_WARN("%s: CUDA%d at %" PRId64 " tokens: %d pairs of repacked products on one input planned (%d with a third, "
+                "ticket 0095); %d launched together\n", __func__, plan.device, plan.n_tokens, plan.n_pairs, (int) plan.third.size(), plan.n_launches);
         }
     }
     plan.partner.clear();
@@ -6700,7 +6741,7 @@ static void ggml_cuda_plan_qpn_sib(ggml_backend_cuda_context * cuda_ctx, const g
         const uintptr_t b0 = (uintptr_t) b->data, b1 = b0 + ggml_nbytes(b);
         return a0 < b1 && b0 < a1;
     };
-    // the nodes a normal dispatch sends to ggml_cuda_mul_mat_qpn at 3 to 8 tokens
+    // the nodes a normal dispatch sends to ggml_cuda_mul_mat_qpn at 1 to 8 tokens (ticket S2: 1 and 2 only form the draft step's q, k, v groups)
     auto candidate = [&](const ggml_tensor * n) {
         if (n->op != GGML_OP_MUL_MAT || !(n->flags & GGML_TENSOR_FLAG_COMPUTE) || ggml_cuda_gdn_folds.skip.count(n)) {
             return false;
@@ -6708,7 +6749,7 @@ static void ggml_cuda_plan_qpn_sib(ggml_backend_cuda_context * cuda_ctx, const g
         const ggml_tensor * src0 = n->src[0];
         const ggml_tensor * src1 = n->src[1];
         return ggml_cuda_qpn_is_repacked(src0) && src0->view_src == nullptr && src1->type == GGML_TYPE_F32 && n->type == GGML_TYPE_F32 &&
-            src1->ne[1] >= 3 && src1->ne[1] <= 8 && src1->ne[2] == 1 && src1->ne[3] == 1 && src1->nb[0] == sizeof(float) &&
+            src1->ne[1] >= 1 && src1->ne[1] <= 8 && src1->ne[2] == 1 && src1->ne[3] == 1 && src1->nb[0] == sizeof(float) &&
             n->nb[0] == sizeof(float) && src1->data != nullptr && n->data != nullptr;
     };
     // n may run at node first instead of its own node j: nothing in [first, j) writes or reads memory under its output
@@ -6733,7 +6774,7 @@ static void ggml_cuda_plan_qpn_sib(ggml_backend_cuda_context * cuda_ctx, const g
     struct open_one { ggml_tensor * n; int j; };
     std::vector<open_one> open; // a candidate still waiting for its partner
     struct open_pair { ggml_tensor * f, * s; int j; };
-    std::vector<open_pair> open3; // a pair that a third product of the same input may still join
+    std::vector<open_pair> open3; // a pair that a third product of the same input may still join (ticket 0095)
     for (int j = 0; j < cgraph->n_nodes; ++j) {
         ggml_tensor * n = cgraph->nodes[j];
         if (ggml_cuda_is_view_or_noop(n)) {
@@ -6761,7 +6802,7 @@ static void ggml_cuda_plan_qpn_sib(ggml_backend_cuda_context * cuda_ctx, const g
                     plan.partner[f] = n;
                     plan.n_pairs += 1;
                     plan.n_tokens = std::max(plan.n_tokens, n->src[1]->ne[1]);
-                    // a product of the same input waiting between the two (the attention v when it comes before k and
+                    // ticket 0095: a product of the same input waiting between the two (the attention v when it comes before k and
                     // cannot pair with q) joins them as the third, under the same rule; otherwise a later one may
                     const int fj = open[k].j;
                     bool third = false;
@@ -6961,11 +7002,11 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                     continue;
                 }
 
-                // folded into a later gated_delta_net launch
+                // folded into a later gated_delta_net launch (ticket 0029)
                 if (!ggml_cuda_gdn_folds.skip.empty() && ggml_cuda_gdn_folds.skip.count(node)) {
                     continue;
                 }
-                // computed later by the kernel of a node that reads it
+                // computed later by the kernel of a node that reads it (ticket 0056)
                 if (!ggml_cuda_glue_folds.skip.empty() && ggml_cuda_glue_folds.skip.count(node)) {
                     continue;
                 }
@@ -6982,8 +7023,8 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                     i += nodes_to_skip;
                     continue;
                 }
-                if (ggml_cuda_sib_gemv_done(node)) { continue; } // computed early by a sibling's group launch
-                if (ggml_cuda_qpn_sib_done(node)) { continue; }  // computed early by its QPN sibling's launch
+                if (ggml_cuda_sib_gemv_done(node)) { continue; } // computed early by a sibling's group launch (ticket 0046)
+                if (ggml_cuda_qpn_sib_done(node)) { continue; }  // computed early by its QPN sibling's launch (ticket 0091)
 #ifndef NDEBUG
                 // On integrated GPUs (APUs, e.g. RDNA3.5) the scheduler may place a
                 // node's output on the host-visible buffer, which the compute path
@@ -7016,7 +7057,7 @@ static void ggml_cuda_graph_evaluate_and_capture(ggml_backend_cuda_context * cud
                 ggml_cuda_rt_stamp(cuda_ctx->stream(), true);
             }
 
-            // what the GDN folds did in a decode-sized graph, once per distinct outcome
+            // what ticket 0029's folds did in a decode-sized graph, once per distinct outcome
             const ggml_cuda_gdn_fold_plan & folds = ggml_cuda_gdn_folds;
             if (folds.n_gdn > 0 && folds.n_tokens <= GGML_CUDA_GDN_FOLD_MAX_TOKENS) {
                 char line[256];
@@ -7215,7 +7256,7 @@ static void ggml_backend_cuda_graph_optimize(ggml_backend_t backend, ggml_cgraph
 
     static const bool disable_fusion = getenv("GGML_CUDA_DISABLE_FUSION") != nullptr && std::atoi(getenv("GGML_CUDA_DISABLE_FUSION"));
     if (!disable_fusion) {
-        ggml_cuda_order_sib_gemv(cuda_ctx, cgraph); // siblings together, for their grouped launch
+        ggml_cuda_order_sib_gemv(cuda_ctx, cgraph); // siblings together, for their grouped launch (ticket 0046)
         for (int i = 0; i < cgraph->n_nodes; ++i) {
             if (cgraph->nodes[i]->op != GGML_OP_MUL) {
                 continue;
@@ -7589,7 +7630,7 @@ struct ggml_backend_cuda_device_context {
     std::string description;
     std::string pci_bus_id;
     int op_offload_min_batch_size;
-    int type_cached = -1; // ggml_backend_cuda_device_get_type's answer, once known
+    int type_cached = -1; // [TAG_DEVTYPE_CACHE] ggml_backend_cuda_device_get_type's answer, once known
 };
 
 static const char * ggml_backend_cuda_device_get_name(ggml_backend_dev_t dev) {
@@ -7722,7 +7763,7 @@ static void ggml_backend_cuda_device_get_memory(ggml_backend_dev_t dev, size_t *
 static enum ggml_backend_dev_type ggml_backend_cuda_device_get_type(ggml_backend_dev_t dev) {
     ggml_backend_cuda_device_context * ctx = (ggml_backend_cuda_device_context *) dev->context;
 
-    // cudaGetDeviceProperties costs about 120 us, and the pipelined decode asks for
+    // [TAG_DEVTYPE_CACHE] ticket 0062: cudaGetDeviceProperties costs about 120 us, and the pipelined decode asks for
     // every backend's type on each submit. the answer (prop.integrated) does not change: keep it
     // (LLAMA_CUDA_DEVTYPE_CACHE=0 asks the driver every time, as before)
     static const bool cache = [] { const char * e = getenv("LLAMA_CUDA_DEVTYPE_CACHE"); return e == nullptr || atoi(e) != 0; }();
@@ -8453,6 +8494,9 @@ static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, con
     }
     if (strcmp(name, "ggml_backend_get_features") == 0) {
         return (void *)ggml_backend_cuda_get_features;
+    }
+    if (strcmp(name, "ggml_backend_cuda_kq_mask") == 0) {
+        return (void *)ggml_backend_cuda_kq_mask;
     }
     if (strcmp(name, "ggml_backend_cuda_diffusion_sample") == 0) {
         return (void *)ggml_cuda_diffusion_sample;

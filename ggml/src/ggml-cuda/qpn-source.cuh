@@ -1,6 +1,6 @@
 #pragma once
 
-// fp16 at the source (LLAMA_QPN_PREP_AT_SOURCE, default on). A kernel that produces the input of products
+// fp16 at the source (ticket 0090, LLAMA_QPN_PREP_AT_SOURCE, default on). A kernel that produces the input of products
 // on repacked weights (mmvq-qpn.cu) writes that input's prepared form (qpn-prep.cuh: xh, xsc and, when a consumer
 // reads them, the per-32 sums xs) as a second output, next to its fp32 output, which stays: the residual, the dp4a
 // products and QPN's non-finite fallback read it. The share planner (ggml_cuda_plan_q8_share) gives the prepared input

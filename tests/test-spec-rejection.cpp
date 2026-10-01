@@ -1,5 +1,5 @@
-// (also the adaptive draft length, run_adapt)
-// the rejection step of speculative sampling keeps the target's distribution.
+// (ticket 0073: also the adaptive draft length, run_adapt)
+// [TAG_SPEC_REJECTION] (ticket 0069) the rejection step of speculative sampling keeps the target's distribution.
 //
 // For each synthetic pair (p, q): draw x from q, run common_sampler_rejection_step (accept x with probability
 // min(1, p(x)/q(x)), else sample the normalized residual max(0, p - q)), 10^6 times. The emitted tokens must follow p:
@@ -142,7 +142,7 @@ static bool run(const test_case & tc, uint64_t seed, int n) {
     return ok;
 }
 
-// the pipelined protocol with rejection sampling, on a Markov chain over V
+// [TAG_SPEC_REJECTION_PIPE] (ticket 0070) the pipelined protocol with rejection sampling, on a Markov chain over V
 // tokens: p(y | prev) the target, q(y | prev) the draft. A round verifies a chunk C = [t, x1, x2]; the guess g of its
 // bonus token is drawn from q(. | x2) and, when the gate q(x1) q(x2) q(g) >= thr passes, a chunk N = [g, n1, n2] is
 // drafted behind C. C's verify is the rejection step on x1, x2 and g against p (no bonus row); N is kept exactly when
@@ -293,7 +293,7 @@ static bool run_pipe(const pipe_case & pc, uint64_t seed, int n, int K) {
     return pc.g_always ? pval > 0.01 : true;
 }
 
-// the adaptive draft length, on the same kind of Markov chain: a round from
+// [TAG_SPEC_REJECTION_ADAPT] (ticket 0073) the adaptive draft length, on the same kind of Markov chain: a round from
 // the last emitted token t drafts x1 ~ q(. | t), and drafts x_{k+1} ~ q(. | x_k) only while k < nmax and the product
 // q(x1) ... q(x_k) is at least the cutoff, so the length depends on q. The verify is the rejection step on each draft
 // in turn, then a bonus token from p when every draft is accepted. The draws come from one generator, the drafts'
@@ -478,7 +478,7 @@ int main(void) {
         ok = run(tc, seed++, n) && ok;
     }
 
-    // the pipelined protocol
+    // [TAG_SPEC_REJECTION_PIPE] the pipelined protocol (ticket 0070)
     {
         const std::vector<std::vector<llama_token_data>> p = {
             dist({ {0, 0.50}, {1, 0.30}, {2, 0.20} }),
@@ -504,7 +504,7 @@ int main(void) {
         }
     }
 
-    // the adaptive draft length
+    // [TAG_SPEC_REJECTION_ADAPT] the adaptive draft length (ticket 0073)
     {
         const std::vector<std::vector<llama_token_data>> p = {
             dist({ {0, 0.50}, {1, 0.30}, {2, 0.20} }),

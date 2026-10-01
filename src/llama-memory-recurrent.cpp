@@ -36,7 +36,7 @@ llama_memory_recurrent::llama_memory_recurrent(
     this->n_rs_seq = n_rs_seq;
     rs_idx.assign(n_seq_max, 0);
 
-    // rows for one backup copy of the snapshots, only when pipelined speculation is enabled
+    // [TAG_SPEC_PIPELINE] rows for one backup copy of the snapshots, only when pipelined speculation is enabled
     {
         const char * e = getenv("LLAMA_SPEC_PIPELINE");
         n_rs_bak = (n_rs_seq > 0 && e != nullptr && atoi(e) != 0) ? n_rs_seq + 1 : 0;
@@ -215,7 +215,7 @@ bool llama_memory_recurrent::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos
                     cell.pos = p0 - 1;
                     return true;
                 }
-                // past the last ubatch, into the one before it: read the backup of its snapshots,
+                // [TAG_SPEC_PIPELINE] past the last ubatch, into the one before it: read the backup of its snapshots,
                 // valid while the last ubatch is the one placed right after the copy was taken
                 if (!pending && n_rs_bak > 0 && (size_t) seq_id < rs_bak.size()) {
                     auto & b = rs_bak[seq_id];

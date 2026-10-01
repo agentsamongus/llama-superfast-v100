@@ -115,7 +115,7 @@ llama_kv_cache::llama_kv_cache(
         auto it = ctx_map.find(buft);
         if (it == ctx_map.end()) {
             ggml_init_params params = {
-                /*.mem_size   =*/ size_t(2u*(1 + n_stream)*n_layer*ggml_tensor_overhead()),
+                /*.mem_size   =*/ size_t((2u*(1 + n_stream)*n_layer + 1)*ggml_tensor_overhead()), // + 1: [TAG_KQ_MASK_DEVICE]
                 /*.mem_buffer =*/ NULL,
                 /*.no_alloc   =*/ true,
             };
@@ -163,6 +163,16 @@ llama_kv_cache::llama_kv_cache(
 
     const bool is_mla = hparams.is_mla();
 
+    // [TAG_KQ_MASK_DEVICE] the one device buffer type that holds every layer's K/V, for the cells' device mirror
+    ggml_backend_buffer_type_t kqm_buft = nullptr;
+    bool kqm_one = true;
+    auto kqm_track = [&](ggml_backend_buffer_type_t b) {
+        if (b == nullptr || (kqm_buft != nullptr && kqm_buft != b)) {
+            kqm_one = false;
+        }
+        kqm_buft = b;
+    };
+
     for (uint32_t il = 0; il < n_layer; il++) {
         if (!hparams.has_kv(il)) {
             LLAMA_LOG_DEBUG("%s: layer %3d: does not have KV cache\n", __func__, il);
@@ -184,6 +194,8 @@ llama_kv_cache::llama_kv_cache(
                         layer_share.k->data, layer_share.v->data);
 
                 map_layer_ids[il] = layers.size();
+
+                kqm_track(layer_share.k && layer_share.k->buffer ? ggml_backend_buffer_get_type(layer_share.k->buffer) : nullptr);
 
                 layers.push_back(layer_share);
                 layers.back().il = il;
@@ -227,6 +239,8 @@ llama_kv_cache::llama_kv_cache(
         if (!ctx) {
             throw std::runtime_error("failed to create ggml context for kv cache");
         }
+
+        kqm_track(buft);
 
         const bool has_k = true;
         const bool has_v = !is_mla;
@@ -274,6 +288,24 @@ llama_kv_cache::llama_kv_cache(
         }
     }
 
+    // [TAG_KQ_MASK_DEVICE] ticket T3: the cells' device mirror, when one device holds all of this cache's layers, the
+    // cells are one stream and the device's backend can build the mask (ggml_backend_cuda_kq_mask)
+    {
+        const char * e = getenv("LLAMA_KQ_MASK_DEVICE");
+        const bool on = e == nullptr || atoi(e) != 0;
+        if (on && offload && n_stream == 1 && !hparams.no_alloc && !layers.empty() && kqm_one && kqm_buft != nullptr &&
+                !ggml_backend_buft_is_host(kqm_buft) && ctx_map.find(kqm_buft) != ctx_map.end()) {
+            ggml_backend_dev_t dev = ggml_backend_buft_get_device(kqm_buft);
+            ggml_backend_reg_t reg = dev ? ggml_backend_dev_backend_reg(dev) : nullptr;
+            void * fn = reg ? ggml_backend_reg_get_proc_address(reg, "ggml_backend_cuda_kq_mask") : nullptr;
+            if (fn != nullptr) {
+                kqm_fn    = fn;
+                kqm_cells = ggml_new_tensor_1d(ctx_map.at(kqm_buft).get(), GGML_TYPE_I32, 3*(int64_t) kv_size);
+                ggml_format_name(kqm_cells, "cache_%skqm_cells", name_tag);
+            }
+        }
+    }
+
     // allocate tensors and initialize the buffers to avoid NaNs in the padding
     for (auto & [buft, ctx] : ctx_map) {
         ggml_backend_buffer_t buf;
@@ -293,6 +325,15 @@ llama_kv_cache::llama_kv_cache(
 
         ggml_backend_buffer_clear(buf, 0);
         ctxs_bufs.emplace_back(std::move(ctx), buf);
+    }
+
+    if (kqm_cells != nullptr) {
+        // a fresh journal epoch: the first mask built on the device uploads every cell
+        for (auto & cells : v_cells) {
+            cells.cjrnl_enable();
+        }
+        LLAMA_LOG_INFO("%s: KQ mask built on the device from a %.2f MiB cell mirror (LLAMA_KQ_MASK_DEVICE=0 to disable)\n",
+                __func__, ggml_nbytes(kqm_cells)/1024.0/1024.0);
     }
 
     {
@@ -404,7 +445,7 @@ bool llama_kv_cache::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos p1) {
 
         uint32_t new_head = cells.size();
 
-        // the cells that hold seq_id at a position in [p0, p1) come from the
+        // [TAG_KV_SEQ_RM_INDEX] (ticket 0089) the cells that hold seq_id at a position in [p0, p1) come from the
         // sequence's position index instead of a scan of every cell (131072 at the full context, three calls per
         // speculative round); visited in ascending cell order, as the scan did, so the cells, the head and the
         // journal end the same. LLAMA_KV_SEQ_RM_SCAN=1 restores the scan
@@ -1853,8 +1894,6 @@ static void set_input_kq_mask_impl(const args_set_input_kq_mask & args, T * data
 void llama_kv_cache::set_input_kq_mask(ggml_tensor * dst, const llama_ubatch * ubatch, bool causal_attn) const {
     const uint32_t n_tokens = ubatch->n_tokens;
 
-    GGML_ASSERT(ggml_backend_buffer_is_host(dst->buffer));
-
     const int64_t n_kv     = dst->ne[0];
     const int64_t n_stream = dst->ne[3]; // num streams in the current ubatch
 
@@ -1862,6 +1901,12 @@ void llama_kv_cache::set_input_kq_mask(ggml_tensor * dst, const llama_ubatch * u
 
     // n_tps == n_tokens_per_stream
     const int64_t n_tps = n_tokens/n_stream;
+
+    // [TAG_KQ_MASK_DEVICE] a mask placed on the device (kq_mask_device_backend) is built there when the ubatch allows it
+    const bool on_host = ggml_backend_buffer_is_host(dst->buffer);
+    if (!on_host && set_input_kq_mask_device(dst, ubatch, causal_attn)) {
+        return;
+    }
 
     // see llama_non_causal_type
     // only the SWA cache (or the SWA layers of a single cache) become non-causal
@@ -1883,15 +1928,154 @@ void llama_kv_cache::set_input_kq_mask(ggml_tensor * dst, const llama_ubatch * u
         /*.n_tps            =*/ n_tps,
     };
 
+    // [TAG_KQ_MASK_DEVICE] a device mask this ubatch cannot build there is written on the host and uploaded
+    std::vector<uint8_t> staging;
+    void * data = dst->data;
+    if (!on_host) {
+        staging.resize(ggml_nbytes(dst));
+        data = staging.data();
+    }
+
     if (dst->type == GGML_TYPE_F16) {
-        set_input_kq_mask_impl<ggml_fp16_t>(args, (ggml_fp16_t *) dst->data, causal_attn);
+        set_input_kq_mask_impl<ggml_fp16_t>(args, (ggml_fp16_t *) data, causal_attn);
     } else {
-        set_input_kq_mask_impl<float>(args, (float *) dst->data, causal_attn);
+        set_input_kq_mask_impl<float>(args, (float *) data, causal_attn);
+    }
+
+    if (!on_host) {
+        // the previous graph on the backend's stream may still read this compute-buffer region
+        if (kqm_backend != nullptr) {
+            ggml_backend_synchronize(kqm_backend);
+        }
+        ggml_backend_tensor_set(dst, staging.data(), 0, staging.size());
     }
 
     //const int64_t t_end = ggml_time_us();
 
     //LLAMA_LOG_ERROR("%s: kq mask time: %0.3f ms\n", __func__, (t_end - t_start)/1000.0);
+}
+
+// [TAG_KQ_MASK_DEVICE] ticket T3
+//
+// For one sequence (0), one stream, a causal mask with no SWA and no ALiBi, the host loop above writes, for query row i
+// (position p1, M-RoPE y1, x1) and cell j < n_kv: 0 when the cell is not empty, holds sequence 0 and has position
+// p0 <= p1, except that with 2D positions a cell at p0 == p1 whose ext is "2D-greater" (y > y1, or y == y1 and x > x1)
+// is dropped; -inf otherwise (an empty cell, a cell of another sequence, a later position). Its row-reuse shortcut
+// only skips cells whose value cannot differ between rows, so this rule is exact for every row.
+//
+// The device mirror kqm_cells holds, per cell, the position if the cell holds sequence 0 (else -1), ext.y and ext.x.
+// The cells' change journal says which cells changed since this cache last built a mask on the device; their new
+// values go with the kernel's arguments (or as one copy when many changed), and the kernel writes the mirror and the
+// mask on the backend's stream, before the graph that reads it.
+typedef bool (*kqm_fn_t)(ggml_backend_t backend, ggml_tensor * mask, ggml_tensor * cells,
+        const int32_t * p, const int32_t * py, const int32_t * px, int32_t n_tokens, bool use_2d,
+        const int32_t * upd, int32_t upd_lo, int32_t upd_n);
+
+static constexpr uint32_t KQM_MAX_TOKENS = 64; // as ggml_backend_cuda_kq_mask
+
+ggml_backend_t llama_kv_cache::kq_mask_device_backend(ggml_backend_sched_t sched, const ggml_tensor * mask, bool causal_attn) const {
+    if (kqm_cells == nullptr || mask == nullptr || sched == nullptr) {
+        return nullptr;
+    }
+
+    if (!causal_attn && hparams.non_causal_type == LLAMA_NON_CAUSAL_TYPE_SWA_ONLY) {
+        causal_attn = swa_type == LLAMA_SWA_TYPE_NONE;
+    }
+
+    if (mask->type != GGML_TYPE_F16 || mask->ne[1] > KQM_MAX_TOKENS || mask->ne[2] != 1 || mask->ne[3] != 1 ||
+            !causal_attn || swa_type != LLAMA_SWA_TYPE_NONE || hparams.use_alibi) {
+        return nullptr;
+    }
+
+    ggml_backend_buffer_type_t buft = ggml_backend_buffer_get_type(kqm_cells->buffer);
+
+    for (int i = 0; i < ggml_backend_sched_get_n_backends(sched); ++i) {
+        ggml_backend_t backend = ggml_backend_sched_get_backend(sched, i);
+        ggml_backend_dev_t dev = ggml_backend_get_device(backend);
+        if (dev && ggml_backend_dev_type(dev) != GGML_BACKEND_DEVICE_TYPE_CPU && ggml_backend_supports_buft(backend, buft)) {
+            kqm_backend = backend;
+            return backend;
+        }
+    }
+
+    return nullptr;
+}
+
+bool llama_kv_cache::set_input_kq_mask_device(ggml_tensor * dst, const llama_ubatch * ubatch, bool causal_attn) const {
+    if (kqm_cells == nullptr || kqm_backend == nullptr || kqm_fn == nullptr) {
+        return false;
+    }
+
+    const uint32_t n_tokens = ubatch->n_tokens;
+
+    if (!causal_attn && hparams.non_causal_type == LLAMA_NON_CAUSAL_TYPE_SWA_ONLY) {
+        causal_attn = swa_type == LLAMA_SWA_TYPE_NONE;
+    }
+
+    if (dst->type != GGML_TYPE_F16 || n_tokens == 0 || n_tokens > KQM_MAX_TOKENS || dst->ne[1] != n_tokens ||
+            dst->ne[2] != 1 || dst->ne[3] != 1 || !causal_attn || swa_type != LLAMA_SWA_TYPE_NONE || hparams.use_alibi) {
+        return false;
+    }
+
+    for (uint32_t i = 0; i < n_tokens; ++i) {
+        if (ubatch->seq_id[i][0] != 0) {
+            return false;
+        }
+    }
+
+    const auto & cells = v_cells[0];
+
+    if (!cells.cjrnl_enabled() || (uint32_t) dst->ne[0] > cells.size()) {
+        return false;
+    }
+
+    const bool is_2d = ubatch->is_pos_2d();
+
+    int32_t p[KQM_MAX_TOKENS], py[KQM_MAX_TOKENS], px[KQM_MAX_TOKENS];
+    for (uint32_t i = 0; i < n_tokens; ++i) {
+        p [i] = ubatch->pos[i];
+        py[i] = is_2d ? ubatch->pos[i + n_tokens]   : 0;
+        px[i] = is_2d ? ubatch->pos[i + n_tokens*2] : 0;
+    }
+
+    // the cells that changed since the mirror was last written
+    const uint64_t epoch = cells.cjrnl_epoch();
+    const uint64_t end   = cells.cjrnl_end();
+
+    uint32_t lo = 0;
+    uint32_t hi = 0;
+    if (epoch != kqm_epoch || kqm_cursor < cells.cjrnl_base()) {
+        hi = cells.size();
+    } else if (kqm_cursor < end) {
+        lo = UINT32_MAX;
+        for (uint64_t k = kqm_cursor; k < end; ++k) {
+            const uint32_t j = cells.cjrnl_get(k);
+            lo = std::min(lo, j);
+            hi = std::max(hi, j + 1);
+        }
+    }
+
+    const uint32_t n_upd = hi - lo;
+
+    std::vector<int32_t> upd(3*(size_t) n_upd);
+    for (uint32_t u = 0; u < n_upd; ++u) {
+        const uint32_t j = lo + u;
+        const bool empty = cells.is_empty(j);
+        upd[u]           = !empty && cells.seq_has(j, 0) ? cells.pos_get(j) : -1;
+        upd[n_upd + u]   = !empty ? cells.ext_get(j).y : 0;
+        upd[2*n_upd + u] = !empty ? cells.ext_get(j).x : 0;
+    }
+
+    const bool ok = ((kqm_fn_t) kqm_fn)(kqm_backend, dst, kqm_cells, p, py, px, (int32_t) n_tokens, is_2d,
+            upd.data(), (int32_t) lo, (int32_t) n_upd);
+    if (!ok) {
+        return false;
+    }
+
+    kqm_epoch  = epoch;
+    kqm_cursor = end;
+
+    return true;
 }
 
 void llama_kv_cache::set_input_pos_bucket(ggml_tensor * dst, const llama_ubatch * ubatch) const {
@@ -2981,6 +3165,10 @@ void llama_kv_cache_context::set_input_v_idxs(ggml_tensor * dst, const llama_uba
 
 void llama_kv_cache_context::set_input_kq_mask(ggml_tensor * dst, const llama_ubatch * ubatch, bool causal_attn) const {
     kv->set_input_kq_mask(dst, ubatch, causal_attn);
+}
+
+ggml_backend_t llama_kv_cache_context::kq_mask_device_backend(ggml_backend_sched_t sched, const ggml_tensor * mask, bool causal_attn) const {
+    return kv->kq_mask_device_backend(sched, mask, causal_attn);
 }
 
 void llama_kv_cache_context::set_input_pos_bucket(ggml_tensor * dst, const llama_ubatch * ubatch) const {

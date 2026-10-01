@@ -79,7 +79,7 @@ public:
 
     void set_rs_idx(llama_seq_id seq_id, uint32_t idx);
 
-    // a second group of (1 + n_rs_seq) snapshot rows per cell (0 when off, LLAMA_SPEC_PIPELINE),
+    // [TAG_SPEC_PIPELINE] a second group of (1 + n_rs_seq) snapshot rows per cell (0 when off, LLAMA_SPEC_PIPELINE),
     // holding a copy of the previous decode's snapshots: a pipelined decode overwrites them while the decode before
     // it is not yet verified, and seq_rm can then roll back into that decode from the copy
     uint32_t n_rs_bak = 0;
@@ -109,7 +109,7 @@ public:
         int32_t   src0 = -1; // like src, but only used when setting the inputs (allowing to copy once)
         int32_t   tail = -1;
 
-        uint32_t  n_last = 0; // the number of tokens of the last ubatch placed in this cell
+        uint32_t  n_last = 0; // [TAG_SPEC_PIPELINE] the number of tokens of the last ubatch placed in this cell
 
         std::set<llama_seq_id> seq_id;
 
@@ -143,7 +143,7 @@ private:
     // ggml contexts for the KV cache along with the allocated backend buffers:
     std::vector<std::pair<ggml_context_ptr, ggml_backend_buffer_ptr>> ctxs_bufs;
 
-    ggml_context_ptr bak_view_ctx; // views for rs_backup
+    ggml_context_ptr bak_view_ctx; // [TAG_SPEC_PIPELINE] views for rs_backup
 
     size_t total_size() const;
 

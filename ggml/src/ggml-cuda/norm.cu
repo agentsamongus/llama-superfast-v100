@@ -501,7 +501,7 @@ void ggml_cuda_op_rms_norm(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     rms_norm_f32_cuda(src0_d, dst_d, ne00, ne01, ne02, ne03, s01, s02, s03, eps, stream);
 }
 
-// A lone RMS_NORM -> MUL by the weight whose output is the input of products on repacked weights (qwen35's
+// A lone RMS_NORM -> MUL by the weight whose output is the input of products on repacked weights (ticket 0090; qwen35's
 // first layer): rms_norm_f32<block_size, true>'s loops, reduction and store expression for one weight row, the normed
 // row also kept in shared memory after the reduction's slots, then its prepared input (qpn-source.cuh); row = token.
 template <int block_size>
@@ -589,7 +589,7 @@ void ggml_cuda_op_rms_norm_fused(ggml_backend_cuda_context & ctx, ggml_tensor * 
     const int mul_nchannels = mul_src->ne[2];
     const int mul_nsamples  = mul_src->ne[3];
 
-    // one weight row over T <= 8 rows whose output is the input of products on repacked weights
+    // ticket 0090: one weight row over T <= 8 rows whose output is the input of products on repacked weights
     ggml_cuda_qpn_dst q;
     const size_t smem_q = (32 + (size_t) ne00) * sizeof(float);
     if (ne02 == 1 && ne03 == 1 && ggml_is_contiguous(mul_src) && ggml_nelements(mul_src) == ne00 && ggml_is_contiguous(mul_tensor) &&
@@ -755,7 +755,7 @@ void ggml_cuda_op_l2_norm(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
 }
 
 // The hyper-connection combine (dsv4_hc_post_f32 without comb) folded into the grouped RMS norm and its
-// gamma multiply that read it (LLAMA_FOLD_HC_NORM). Each block computes one [n_embd] row of
+// gamma multiply that read it (ticket 0043, LLAMA_FOLD_HC_NORM). Each block computes one [n_embd] row of
 // the combine exactly as dsv4_hc_post_f32 does, stores it (the residual stream stays a graph tensor), and
 // then runs rms_norm_f32<block_size, true>'s reduction and store on it, so both outputs are bit-identical.
 template <int block_size>
@@ -838,11 +838,11 @@ void ggml_cuda_op_hc_post_rms_norm_mul(ggml_backend_cuda_context & ctx, ggml_ten
     }
 }
 
-// The GDN output's gated norm, RMS_NORM -> MUL by the weight, then MUL by SIGMOID(z)
-// (LLAMA_FOLD_NORM_GATE), in one launch at the sigmoid's place. rms_norm_f32<block_size, true>'s loops,
+// The GDN output's gated norm, RMS_NORM -> MUL by the weight, then MUL by SIGMOID(z) (ticket 0056,
+// LLAMA_FOLD_NORM_GATE), in one launch at the sigmoid's place. rms_norm_f32<block_size, true>'s loops,
 // reduction and store expression, then the product op_sigmoid(z) * normed as unary_gated_op_kernel forms it:
 // each value is rounded as the separate kernels round it, so dst is bit-identical. With silu (qwen35's
-// build_norm_gated) the gate is op_silu(z), as the fused UNARY -> MUL launch forms it.
+// build_norm_gated, ticket 0087) the gate is op_silu(z), as the fused UNARY -> MUL launch forms it.
 static __device__ __forceinline__ float norm_gate_sigmoid(float x) {
     return 1.0f / (1.0f + expf(-x)); // unary.cu's op_sigmoid
 }
@@ -926,7 +926,7 @@ static __global__ void rms_norm_mul_sigmoid_gate_f32(
     }
 }
 
-// The gated norm whose output is the input of products on repacked weights (qwen35's GDN output, heads of
+// The gated norm whose output is the input of products on repacked weights (ticket 0090; qwen35's GDN output, heads of
 // 128 columns): one block of 256 threads per pair of heads (one 256-column slice) and token. Each half is the block of
 // rms_norm_mul_sigmoid_gate_f32<256, silu, n_reg> for its head: its thread tid' < 128 holds column tid', and its
 // reduction is block_reduce's: the warp sums, then the sum over [its 4 warp sums, 4 zeros, 24 zeros], which is what
@@ -1005,7 +1005,7 @@ void ggml_cuda_op_rms_norm_mul_sigmoid_gate(ggml_backend_cuda_context & ctx, con
     const int64_t ne00 = x->ne[0], ne01 = x->ne[1], ne02 = x->ne[2], ne03 = x->ne[3];
     const int64_t s01 = x->nb[1]/sizeof(float), s02 = x->nb[2]/sizeof(float), s03 = x->nb[3]/sizeof(float);
 
-    // heads of 128 columns over T <= 8 tokens, the output the input of products on repacked weights
+    // ticket 0090: heads of 128 columns over T <= 8 tokens, the output the input of products on repacked weights
     ggml_cuda_qpn_dst q;
     if (ne00 == 128 && ne01 % 2 == 0 && ne03 == 1 && ggml_cuda_qpn_source_begin(dst, ne00*ne01, (int) ne02, ctx.stream(), &q)) {
         const ggml_cuda_kernel_launch_params launch_params = {dim3(ne01/2, ne02, ne03), dim3(256, 1, 1), 0, ctx.stream()};
@@ -1046,7 +1046,7 @@ void ggml_cuda_op_rms_norm_mul_sigmoid_gate(ggml_backend_cuda_context & ctx, con
     }
 }
 
-// The residual ADD folded into the RMS norm and weight multiply that read it (LLAMA_FOLD_ADD_NORM):
+// The residual ADD folded into the RMS norm and weight multiply that read it (ticket 0087, LLAMA_FOLD_ADD_NORM):
 // qwen35's trunk, ADD(block out, residual) -> RMS_NORM -> MUL by the norm weight. Each block forms one row of the
 // sum as k_bin_bcast's op_add does and stores it (the residual stream stays a graph tensor), then runs
 // rms_norm_f32<block_size, true>'s reduction and store on it, so both outputs are bit-identical. Every column is
@@ -1054,7 +1054,7 @@ void ggml_cuda_op_rms_norm_mul_sigmoid_gate(ggml_backend_cuda_context & ctx, con
 // output in place of either addend (same layout), but not over the sum.
 // With n_reg > 0 (ncols <= n_reg*block_size) each thread keeps its sums and weights in registers across the
 // reduction, so nothing is loaded after it; the values and the order are the same.
-// With qpn (n_reg > 0 only) the block also keeps its normed row in shared memory after the reduction's
+// With qpn (ticket 0090, n_reg > 0 only) the block also keeps its normed row in shared memory after the reduction's
 // slots and writes the row's prepared input from it (qpn-source.cuh), one warp per 256-column slice; row = token.
 template <int block_size, int n_reg, bool qpn = false>
 static __global__ void add_rms_norm_mul_f32(
@@ -1168,7 +1168,7 @@ void ggml_cuda_op_add_rms_norm_mul(ggml_backend_cuda_context & ctx, const ggml_t
             (const float *) w->data, q);
     };
     constexpr int n_reg = 8;
-    // the normed output is the input of products on repacked weights, prepared here
+    // ticket 0090: the normed output is the input of products on repacked weights, prepared here
     ggml_cuda_qpn_dst q;
     const size_t smem_q = (32 + (size_t) ncols) * sizeof(float);
     if (ncols % QK_K == 0 && ncols <= n_reg*1024 && smem_q <= 48*1024 &&

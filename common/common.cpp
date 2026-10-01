@@ -3,6 +3,12 @@
 
 #include "build-info.h"
 #include "common.h"
+#include <mutex>
+#include <thread>
+#include <new>
+#ifndef _WIN32
+#include <sys/mman.h>
+#endif
 #include "fit.h"
 #include "log.h"
 #include "llama.h"
@@ -1286,6 +1292,7 @@ struct common_init_result::impl {
     std::vector<common_sampler_ptr> samplers;
     std::vector<llama_sampler_seq_config> samplers_seq_config;
 
+    // [TAG_BACKEND_TOPK]
     int32_t backend_topk_n = 0;
     std::vector<llama_sampler_ptr> backend_topk;
     std::vector<llama_sampler_seq_config> backend_topk_seq_config;
@@ -1398,7 +1405,7 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
         cparams.samplers   = pimpl->samplers_seq_config.data();
         cparams.n_samplers = pimpl->samplers_seq_config.size();
     } else if (params.backend_topk) {
-        // registered once, with the context: a later registration would reserve the scheduler again
+        // [TAG_BACKEND_TOPK] registered once, with the context: a later registration would reserve the scheduler again
         pimpl->backend_topk_n = common_sampler_backend_topk_n(vocab, params.sampling);
         if (pimpl->backend_topk_n > 0) {
             pimpl->backend_topk.resize(cparams.n_seq_max);
@@ -1749,7 +1756,7 @@ struct llama_context_params common_context_params_to_llama(const common_params &
     cparams.n_ctx             = params.n_ctx;
     cparams.n_seq_max         = params.n_parallel;
     cparams.n_rs_seq          = params.speculative.need_n_rs_seq();
-    // the rollback covers the deepest adaptive draft
+    // [TAG_SPEC_REJECTION_ADAPT] (ticket 0073) the rollback covers the deepest adaptive draft
     if (cparams.n_rs_seq > 0) {
         cparams.n_rs_seq = std::max(cparams.n_rs_seq, (uint32_t) common_speculative_rejection_nmax());
     }
@@ -2283,6 +2290,131 @@ bool common_prompt_batch_decode(
     return true;
 }
 
+// ticket 0121: checkpoint allocator and pool of checkpoint buffers (see common.h)
+void * common_ckpt_alloc(size_t bytes) {
+#ifdef _WIN32
+    void * p = malloc(bytes ? bytes : 1);
+    if (!p) { throw std::bad_alloc(); }
+    return p;
+#else
+    if (bytes < (1u << 20)) {
+        void * p = malloc(bytes ? bytes : 1);
+        if (!p) { throw std::bad_alloc(); }
+        return p;
+    }
+    void * p = mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_POPULATE, -1, 0);
+    if (p == MAP_FAILED) { throw std::bad_alloc(); }
+    return p;
+#endif
+}
+void common_ckpt_free(void * p, size_t bytes) noexcept {
+#ifdef _WIN32
+    (void) bytes; free(p);
+#else
+    if (bytes < (1u << 20)) { free(p); return; }
+    munmap(p, bytes);
+#endif
+}
+
+namespace {
+struct ckpt_buffer_pool {
+    std::mutex mtx;
+    std::vector<common_ckpt_bytes> bufs;
+    int inflight[2] = {0, 0};               // buffers being allocated in the background, per kind (0 target, 1 draft)
+    static constexpr size_t max_bufs  = 12; // recycled buffers kept
+    static constexpr int    n_spare   = 3;  // buffers kept ready per kind, refilled in the background
+    static constexpr size_t min_bytes = 1u << 20;
+};
+ckpt_buffer_pool & ckpt_pool() {
+    static ckpt_buffer_pool * p = new ckpt_buffer_pool; // never destroyed: checkpoints and the refill threads may outlive static destruction
+    return *p;
+}
+void ckpt_recycle(common_ckpt_bytes & v) {
+    if (v.size() < ckpt_buffer_pool::min_bytes) {
+        return;
+    }
+    auto & pool = ckpt_pool();
+    std::lock_guard<std::mutex> lock(pool.mtx);
+    if (pool.bufs.size() < ckpt_buffer_pool::max_bufs) {
+        pool.bufs.push_back(std::move(v));
+        v = common_ckpt_bytes();
+    }
+}
+// keep n_spare buffers of about this size ready: a checkpoint then never allocates on the request's path (a fresh 150 MiB block costs
+// 59 ms of page faults and zero fill, against 28 ms for the copy itself). The allocation runs on a thread of its own.
+void ckpt_refill(int kind, size_t size) {
+    auto & pool = ckpt_pool();
+    const size_t cap = size + size/50 + (1u << 20);
+    int n_new = 0;
+    {
+        std::lock_guard<std::mutex> lock(pool.mtx);
+        int n_fit = pool.inflight[kind];
+        for (const auto & b : pool.bufs) {
+            if (b.capacity() >= size && b.capacity() <= 2*cap) { n_fit++; }
+        }
+        n_new = ckpt_buffer_pool::n_spare - n_fit;
+        if (n_new > 0) { pool.inflight[kind] += n_new; }
+    }
+    for (int i = 0; i < n_new; ++i) {
+        std::thread([kind, cap]() {
+            common_ckpt_bytes b;
+            try { b.resize(cap); } catch (...) { b = common_ckpt_bytes(); }
+            auto & pl = ckpt_pool();
+            std::lock_guard<std::mutex> lock(pl.mtx);
+            pl.inflight[kind]--;
+            if (!b.empty() && pl.bufs.size() < ckpt_buffer_pool::max_bufs) { pl.bufs.push_back(std::move(b)); }
+        }).detach();
+    }
+}
+// a pooled buffer of exactly this size if there is one (no zero fill), else the one closest in size that fits, else a fresh vector
+void ckpt_take(int kind, common_ckpt_bytes & v, size_t size) {
+    if (size < ckpt_buffer_pool::min_bytes) {
+        v.resize(size);
+        return;
+    }
+    auto & pool = ckpt_pool();
+    {
+        std::lock_guard<std::mutex> lock(pool.mtx);
+        size_t best = pool.bufs.size();
+        for (size_t i = 0; i < pool.bufs.size(); ++i) {
+            if (pool.bufs[i].size() == size) { best = i; break; }
+            if (pool.bufs[i].capacity() >= size && (best == pool.bufs.size() || pool.bufs[i].capacity() < pool.bufs[best].capacity())) { best = i; }
+        }
+        if (best < pool.bufs.size()) {
+            v = std::move(pool.bufs[best]);
+            pool.bufs.erase(pool.bufs.begin() + best);
+        }
+    }
+    v.resize(size); // no zero fill: the allocator leaves new elements uninitialised
+    ckpt_refill(kind, size);
+}
+} // namespace
+
+common_prompt_checkpoint::~common_prompt_checkpoint() {
+    ckpt_recycle(data_tgt);
+    ckpt_recycle(data_dft);
+}
+
+common_prompt_checkpoint & common_prompt_checkpoint::operator=(const common_prompt_checkpoint & other) {
+    if (this != &other) {
+        ckpt_recycle(data_tgt);
+        ckpt_recycle(data_dft);
+        n_tokens = other.n_tokens; id_task = other.id_task; pos_min = other.pos_min; pos_max = other.pos_max;
+        data_tgt = other.data_tgt; data_dft = other.data_dft; data_spec = other.data_spec;
+    }
+    return *this;
+}
+
+common_prompt_checkpoint & common_prompt_checkpoint::operator=(common_prompt_checkpoint && other) {
+    if (this != &other) {
+        ckpt_recycle(data_tgt);
+        ckpt_recycle(data_dft);
+        n_tokens = other.n_tokens; id_task = other.id_task; pos_min = other.pos_min; pos_max = other.pos_max;
+        data_tgt = std::move(other.data_tgt); data_dft = std::move(other.data_dft); data_spec = std::move(other.data_spec);
+    }
+    return *this;
+}
+
 size_t common_prompt_checkpoint::size() const {
     return data_tgt.size() + data_dft.size() + data_spec.size();
 }
@@ -2297,6 +2429,8 @@ void common_prompt_checkpoint::clear() {
     pos_min = 0;
     pos_max = 0;
 
+    ckpt_recycle(data_tgt);
+    ckpt_recycle(data_dft);
     data_tgt.clear();
     data_dft.clear();
     data_spec.clear();
@@ -2321,7 +2455,8 @@ void common_prompt_checkpoint::update_tgt(
 
     const size_t ckpt_size = llama_state_seq_get_size_ext(ctx, seq_id, flags);
 
-    data_tgt.resize(ckpt_size);
+    ckpt_recycle(data_tgt);
+    ckpt_take(0, data_tgt, ckpt_size);
 
     const size_t n = llama_state_seq_get_data_ext(ctx, data_tgt.data(), ckpt_size, seq_id, flags);
     if (n != ckpt_size) {
@@ -2339,7 +2474,8 @@ void common_prompt_checkpoint::update_dft(
 
     const size_t ckpt_size = llama_state_seq_get_size_ext(ctx, seq_id, flags);
 
-    data_dft.resize(ckpt_size);
+    ckpt_recycle(data_dft);
+    ckpt_take(1, data_dft, ckpt_size);
 
     const size_t n = llama_state_seq_get_data_ext(ctx, data_dft.data(), ckpt_size, seq_id, flags);
     if (n != ckpt_size) {
@@ -2384,10 +2520,12 @@ void common_prompt_checkpoint::load_dft(
 }
 
 void common_prompt_checkpoint::clear_tgt() {
+    ckpt_recycle(data_tgt);
     data_tgt.clear();
 }
 
 void common_prompt_checkpoint::clear_dft() {
+    ckpt_recycle(data_dft);
     data_dft.clear();
     data_spec.clear();
 }

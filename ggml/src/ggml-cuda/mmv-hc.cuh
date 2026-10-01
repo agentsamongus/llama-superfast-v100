@@ -24,11 +24,11 @@ bool ggml_cuda_mul_mat_vec_hc(ggml_backend_cuda_context & ctx, const ggml_tensor
 // where mul_mat_vec_f would run; bit-identical to it. Returns false for other shapes (LLAMA_BF16_GEMV).
 bool ggml_cuda_mul_mat_vec_bf16(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst);
 
-// Whether ggml_cuda_mul_mat_vec_bf16 takes this product on this device.
+// Whether ggml_cuda_mul_mat_vec_bf16 takes this product on this device (ticket 0046).
 bool ggml_cuda_mul_mat_vec_bf16_ok(int device, const ggml_tensor * src0, const ggml_tensor * src1, const ggml_tensor * dst);
 
 // n such products of one shared src1 in one launch, each bit-identical to its own ggml_cuda_mul_mat_vec_bf16
-// launch (F8). The caller has checked ggml_cuda_mul_mat_vec_bf16_ok for every one.
+// launch (ticket 0046, F8). The caller has checked ggml_cuda_mul_mat_vec_bf16_ok for every one.
 #define GGML_CUDA_BF16_GEMV_GROUP_MAX 4
 void ggml_cuda_mul_mat_vec_bf16_group(ggml_backend_cuda_context & ctx, int n, const ggml_tensor * const * src0,
                                       const ggml_tensor * src1, ggml_tensor * const * dst);

@@ -36,6 +36,107 @@ static void top_k_cub(ggml_cuda_pool & pool,
                          ncols, k, env));
 }
 
+// Ticket S2 (LLAMA_TOPK_TILED, default OFF: measured slower than the CUB chain, +20 us a call at 248,320 logits; 1 = this kernel): k <= 32 of a long row without CUB's sort-like chain (its three
+// DeviceTopKKernel passes, the last filter and, in the sampler, the gathers cost 4 launches and about 20 us a row at 248,320 logits).
+// Kernel A: each block takes a contiguous slice of TOPK_TILE_IPT*TOPK_TILE_THREADS logits, k rounds of a block-wide arg-max over
+// 64-bit keys (the logit's order-preserving bits, then the inverted index, so equal logits rank lowest index first) and writes its
+// k best keys. Kernel B: one block merges the blocks' keys the same way and writes the k indices, best first. CUB's unsorted output
+// order is decided by atomics and varies from run to run; this one is fixed (logit descending, ties by index), the set is the same.
+#define TOPK_TILE_THREADS 256
+#define TOPK_TILE_IPT     8
+#define TOPK_MERGE_IPT    16
+#define TOPK_TILE_MAXK    32
+
+static __device__ __forceinline__ unsigned long long topk_tile_key(const float v, const uint32_t idx) {
+    const uint32_t bits = __float_as_uint(v);
+    const uint32_t ord  = bits ^ ((uint32_t) (-(int32_t) (bits >> 31)) | 0x80000000U);
+    return ((unsigned long long) ord << 32) | (uint32_t) (0xFFFFFFFFu - idx);
+}
+
+static __device__ __forceinline__ unsigned long long topk_tile_shfl_xor_max(unsigned long long m, const int off) {
+    const uint32_t lo = __shfl_xor_sync(0xFFFFFFFF, (uint32_t) m, off);
+    const uint32_t hi = __shfl_xor_sync(0xFFFFFFFF, (uint32_t) (m >> 32), off);
+    const unsigned long long o = ((unsigned long long) hi << 32) | lo;
+    return o > m ? o : m;
+}
+
+// k rounds of the block-wide maximum over IPT keys a thread (0 = no key); the winner of round r goes to out(r, key)
+template <int IPT, typename Out>
+static __device__ __forceinline__ void topk_tile_select(unsigned long long (&key)[IPT], const int k, Out out) {
+    __shared__ unsigned long long wmax[2][TOPK_TILE_THREADS/32];
+    const int lane = threadIdx.x % 32, warp = threadIdx.x / 32;
+    for (int r = 0; r < k; ++r) {
+        unsigned long long m = 0;
+#pragma unroll
+        for (int i = 0; i < IPT; ++i) {
+            m = key[i] > m ? key[i] : m;
+        }
+#pragma unroll
+        for (int off = 16; off > 0; off >>= 1) {
+            m = topk_tile_shfl_xor_max(m, off);
+        }
+        if (lane == 0) {
+            wmax[r & 1][warp] = m;
+        }
+        __syncthreads();
+        unsigned long long w = wmax[r & 1][0];
+#pragma unroll
+        for (int i = 1; i < TOPK_TILE_THREADS/32; ++i) {
+            w = wmax[r & 1][i] > w ? wmax[r & 1][i] : w;
+        }
+        if (threadIdx.x == 0) {
+            out(r, w);
+        }
+#pragma unroll
+        for (int i = 0; i < IPT; ++i) {
+            key[i] = key[i] == w ? 0 : key[i];
+        }
+    }
+}
+
+static __global__ void __launch_bounds__(TOPK_TILE_THREADS) topk_tile_a(const float * __restrict__ src, unsigned long long * __restrict__ cand,
+        const int ncols, const int k, const size_t row_stride) {
+    const float * row = src + blockIdx.y*row_stride;
+    const int base = blockIdx.x*(TOPK_TILE_THREADS*TOPK_TILE_IPT);
+    unsigned long long key[TOPK_TILE_IPT];
+#pragma unroll
+    for (int i = 0; i < TOPK_TILE_IPT; ++i) {
+        const int idx = base + i*TOPK_TILE_THREADS + threadIdx.x;
+        key[i] = idx < ncols ? topk_tile_key(row[idx], idx) : 0;
+    }
+    unsigned long long * out = cand + ((size_t) blockIdx.y*gridDim.x + blockIdx.x)*k;
+    topk_tile_select<TOPK_TILE_IPT>(key, k, [&](const int r, const unsigned long long w) { out[r] = w; });
+}
+
+static __global__ void __launch_bounds__(TOPK_TILE_THREADS) topk_tile_b(const unsigned long long * __restrict__ cand, int * __restrict__ dst,
+        const int ncand, const int k) {
+    const unsigned long long * in = cand + (size_t) blockIdx.x*ncand;
+    unsigned long long key[TOPK_MERGE_IPT];
+#pragma unroll
+    for (int i = 0; i < TOPK_MERGE_IPT; ++i) {
+        const int j = i*TOPK_TILE_THREADS + threadIdx.x;
+        key[i] = j < ncand ? in[j] : 0;
+    }
+    int * out = dst + (size_t) blockIdx.x*k;
+    topk_tile_select<TOPK_MERGE_IPT>(key, k, [&](const int r, const unsigned long long w) { out[r] = (int) (0xFFFFFFFFu - (uint32_t) w); });
+}
+
+static bool top_k_tiled(ggml_cuda_pool & pool, const float * src, int * dst, const int64_t ncols, const int64_t nrows, const int k,
+                        const size_t row_stride, cudaStream_t stream) {
+    static const bool on = [] { const char * e = getenv("LLAMA_TOPK_TILED"); return e != nullptr && atoi(e) != 0; }();
+    const int64_t per_block = TOPK_TILE_THREADS*TOPK_TILE_IPT;
+    const int64_t nblk      = (ncols + per_block - 1)/per_block;
+    if (!on || k < 1 || k > TOPK_TILE_MAXK || nblk < 2 || nblk*k > TOPK_TILE_THREADS*TOPK_MERGE_IPT || ncols >= (1ll << 31) || nrows > 65535) {
+        return false;
+    }
+    ggml_cuda_pool_alloc<unsigned long long> cand(pool, (size_t) nrows*nblk*k);
+    topk_tile_a<<<dim3((unsigned) nblk, (unsigned) nrows), TOPK_TILE_THREADS, 0, stream>>>(src, cand.get(), (int) ncols, k, row_stride);
+    CUDA_CHECK(cudaGetLastError());
+    topk_tile_b<<<(unsigned) nrows, TOPK_TILE_THREADS, 0, stream>>>(cand.get(), dst, (int) (nblk*k), k);
+    CUDA_CHECK(cudaGetLastError());
+    return true;
+}
+
 #elif defined(GGML_CUDA_USE_CUB)  // CUB_TOP_K_AVAILABLE
 
 static int next_power_of_2(int x) {
@@ -226,6 +327,9 @@ void ggml_cuda_op_top_k(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     const int64_t    k     = dst->ne[0];
     ggml_cuda_pool & pool  = ctx.pool();
 #ifdef CUB_TOP_K_AVAILABLE
+    if (src0->nb[1] % sizeof(float) == 0 && top_k_tiled(pool, src0_d, dst_d, ncols, nrows, (int) k, src0->nb[1]/sizeof(float), stream)) {
+        return; // ticket S2
+    }
     // TODO: Switch to `DeviceSegmentedTopK` for multi-row TopK once implemented
     // https://github.com/NVIDIA/cccl/issues/6391
     // TODO: investigate if there exists a point where parallelized argsort is faster than sequential top-k

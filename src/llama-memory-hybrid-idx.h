@@ -29,6 +29,7 @@ struct llama_qsa_input {
 void llama_qsa_input_scan(const llama_kv_cells * const * cells, const llama_qsa_input & dst,
                           const llama_ubatch * ubatch, uint32_t ratio, bool blk_bias);
 
+// [TAG_QSA_HOST_META]
 // the block selection inputs from a block table kept in step with each cells array through its change journal
 // (llama_kv_cells::jrnl_*), so a call costs the changed position buckets plus one pass over the blocks
 // invariant: once synced, each bucket (pos/ratio) holds the groups llama_qsa_input_scan would build from it, in
@@ -102,7 +103,7 @@ private:
     int32_t intern(tab & t, const seq_set_t & set);
 };
 
-// LLAMA_MTP_QSA_REUSE: a QSA block selection kept on the device across graph builds, so the
+// [TAG_QSA_SEL_KEEP] LLAMA_MTP_QSA_REUSE: a QSA block selection kept on the device across graph builds, so the
 // qwen4exp MTP draft steps attend with the selection the catch-up computed for the last verified row instead of
 // running the indexer again. graph_mtp writes and reads sel; this only allocates it and records, on the host,
 // the sequence and position of each kept row and the cells the draft steps have added since.
@@ -233,7 +234,7 @@ public:
                        ggml_tensor * bias, ggml_tensor * tail, const llama_ubatch * ubatch,
                        uint32_t ratio, bool blk_bias, int64_t n_kv) const;
 
-    // every change to the cells below forgets what it touches
+    // [TAG_QSA_SEL_KEEP] every change to the cells below forgets what it touches
     llama_qsa_sel_keep * get_sel_keep() const;
 
 private:

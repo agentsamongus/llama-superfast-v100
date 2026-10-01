@@ -11,7 +11,7 @@ int get_mmvq_mmid_max_batch(ggml_type type, int cc);
 void ggml_cuda_mul_mat_vec_q(ggml_backend_cuda_context & ctx,
     const ggml_tensor * src0, const ggml_tensor * src1, const ggml_tensor * ids, ggml_tensor * dst, const ggml_cuda_mm_fusion_args_host * fusion = nullptr);
 
-// (F5, ggml-cuda.cu): the shared q8_1 buffer of this mul_mat's src1, or nullptr; *ready: already quantized
+// ticket 0042 (F5, ggml-cuda.cu): the shared q8_1 buffer of this mul_mat's src1, or nullptr; *ready: already quantized
 char * ggml_cuda_q8_share_buffer(const ggml_tensor * src0, const ggml_tensor * src1, size_t nbytes, cudaStream_t stream, bool * ready);
 
 void ggml_cuda_op_mul_mat_vec_q(

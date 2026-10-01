@@ -331,7 +331,7 @@ struct common_params_speculative_draft {
 
     bool backend_sampling = true; // offload draft sampling to the backend (default: on)
 
-    int32_t top_k = 10; // the MTP draft's candidates per row (its device top-k)
+    int32_t top_k = 10; // [TAG_SPEC_COUPLED] the MTP draft's candidates per row (its device top-k)
 
     common_params_model mparams;
 
@@ -473,7 +473,7 @@ struct common_params {
     int32_t n_sequences           =     1; // number of sequences to decode
     int32_t n_outputs_max         =     0; // max outputs in a batch (0 = n_batch)
     int32_t n_outputs_max_per_seq =     1; // max outputs per sequence
-    bool    backend_topk          = false; // create the context with backend top-k samplers (common_sampler_backend_topk_n)
+    bool    backend_topk          = false; // [TAG_BACKEND_TOPK] create the context with backend top-k samplers (common_sampler_backend_topk_n)
     int32_t grp_attn_n            =     1; // group-attention factor
     int32_t grp_attn_w            =   512; // group-attention width
     int32_t n_print               =    -1; // print token count every n tokens (-1 = disabled)
@@ -954,7 +954,7 @@ struct common_init_result {
     common_sampler * sampler(llama_seq_id seq_id);
     void reset_samplers();
 
-    // with params.backend_topk, every sequence of the context has a backend top-k(n) sampler from
+    // [TAG_BACKEND_TOPK] with params.backend_topk, every sequence of the context has a backend top-k(n) sampler from
     // its creation on: n, and the sampler of one sequence (0 and nullptr when there are none)
     int32_t backend_topk_n() const;
     struct llama_sampler * backend_topk(llama_seq_id seq_id);
@@ -1185,6 +1185,27 @@ enum ggml_opt_optimizer_type common_opt_get_optimizer(const char *);
 // prompt utils
 //
 
+// ticket 0121: checkpoint bytes. Large blocks come from mmap with MAP_POPULATE (the kernel pre-faults the pages in one call, about 4x
+// cheaper than 38,000 first-touch faults) and are not zero-filled by resize (every byte is overwritten by the state copy).
+template<typename T>
+struct common_ckpt_allocator {
+    using value_type = T;
+    common_ckpt_allocator() = default;
+    template<typename U> common_ckpt_allocator(const common_ckpt_allocator<U> &) noexcept {}
+    T * allocate(size_t n);
+    void deallocate(T * p, size_t n) noexcept;
+    template<typename U> void construct(U *) noexcept {} // default-initialise: leave uninitialised
+    template<typename U, typename... Args> void construct(U * p, Args &&... args) { ::new ((void *) p) U(std::forward<Args>(args)...); }
+    template<typename U> bool operator==(const common_ckpt_allocator<U> &) const noexcept { return true; }
+    template<typename U> bool operator!=(const common_ckpt_allocator<U> &) const noexcept { return false; }
+};
+void * common_ckpt_alloc(size_t bytes);
+void   common_ckpt_free(void * p, size_t bytes) noexcept;
+template<typename T> T * common_ckpt_allocator<T>::allocate(size_t n) { return (T *) common_ckpt_alloc(n * sizeof(T)); }
+template<typename T> void common_ckpt_allocator<T>::deallocate(T * p, size_t n) noexcept { common_ckpt_free(p, n * sizeof(T)); }
+
+using common_ckpt_bytes = std::vector<uint8_t, common_ckpt_allocator<uint8_t>>;
+
 struct common_prompt_checkpoint {
     int64_t n_tokens;
 
@@ -1194,12 +1215,21 @@ struct common_prompt_checkpoint {
     llama_pos pos_min;
     llama_pos pos_max;
 
-    std::vector<uint8_t> data_tgt;
-    std::vector<uint8_t> data_dft;
+    common_ckpt_bytes data_tgt;
+    common_ckpt_bytes data_dft;
 
     // (optional) speculative-decoding implementation state stashed with the checkpoint
     // (e.g. eagle3's deferred-boundary g_embd row)
     std::vector<uint8_t> data_spec;
+
+    // ticket 0121: the big buffers go back to a small pool when a checkpoint is destroyed or cleared, and update_tgt / update_dft
+    // take them from it, so a new checkpoint does not pay for a fresh 150 MiB allocation (page faults plus zero fill, 59 ms measured)
+    common_prompt_checkpoint() = default;
+    common_prompt_checkpoint(const common_prompt_checkpoint &) = default;
+    common_prompt_checkpoint(common_prompt_checkpoint &&) = default;
+    common_prompt_checkpoint & operator=(const common_prompt_checkpoint & other);
+    common_prompt_checkpoint & operator=(common_prompt_checkpoint && other);
+    ~common_prompt_checkpoint();
 
     size_t size() const;
 

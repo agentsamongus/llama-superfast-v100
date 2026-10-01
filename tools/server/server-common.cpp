@@ -1524,7 +1524,7 @@ json format_response_rerank(
 std::vector<llama_token_data> get_token_probabilities(llama_context * ctx, int idx, size_t n_top) {
     std::vector<llama_token_data> cur;
 
-    // pre-sampling probabilities are over the full vocabulary, also when a backend top-k sampler
+    // [TAG_BACKEND_TOPK] pre-sampling probabilities are over the full vocabulary, also when a backend top-k sampler
     // returned candidates for the row (upstream backend sampling is not used for these requests)
     const auto * logits = llama_get_logits_full_ith(ctx, idx);
     const llama_token * sampled_ids = nullptr;

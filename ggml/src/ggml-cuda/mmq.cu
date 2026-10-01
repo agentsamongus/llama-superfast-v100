@@ -97,7 +97,7 @@ void ggml_cuda_mul_mat_q(
     GGML_ASSERT(        src1->type == GGML_TYPE_F32);
     GGML_ASSERT(        dst->type  == GGML_TYPE_F32);
     GGML_ASSERT(!ids || ids->type  == GGML_TYPE_I32); // Optional, used for batched GGML_MUL_MAT_ID.
-    GGML_ASSERT(!ggml_cuda_qpn_is_repacked(src0)); // a repacked weight holds no GGUF layout
+    GGML_ASSERT(!ggml_cuda_qpn_is_repacked(src0)); // ticket 0078: a repacked weight holds no GGUF layout
 
     GGML_TENSOR_BINARY_OP_LOCALS;
 

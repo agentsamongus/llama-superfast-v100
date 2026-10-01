@@ -23,7 +23,7 @@
 // llama_memory_hybrid_idx
 //
 
-// LLAMA_QSA_HOST_META: 1 (default) serves block selection from llama_qsa_blk_table,
+// [TAG_QSA_HOST_META] LLAMA_QSA_HOST_META: 1 (default) serves block selection from llama_qsa_blk_table,
 // 0 always runs the full scan, 2 serves from the table and compares every call with the scan, aborting on any difference
 static int llama_qsa_host_meta_mode() {
     static const int mode = [] {
@@ -35,7 +35,7 @@ static int llama_qsa_host_meta_mode() {
 }
 
 //
-// llama_qsa_sel_keep
+// llama_qsa_sel_keep [TAG_QSA_SEL_KEEP]
 //
 
 bool llama_qsa_sel_keep::alloc(ggml_backend_buffer_type_t buft, int64_t w_max) {
@@ -209,7 +209,7 @@ llama_memory_hybrid_idx::llama_memory_hybrid_idx(
             kv_size, n_seq_max, n_pad, n_swa, swa_type,
             nullptr, filter_idx, nullptr, nullptr, "idx_");
     }()) {
-    // set_input_qsa's block table follows the indexer cells through their change journal
+    // set_input_qsa's block table follows the indexer cells through their change journal [TAG_QSA_HOST_META]
     if (mem_idx && llama_qsa_host_meta_mode() != 0) {
         mem_idx->cells_jrnl_enable();
     }
@@ -900,7 +900,7 @@ void llama_qsa_input_scan(
 }
 
 //
-// llama_qsa_blk_table
+// llama_qsa_blk_table [TAG_QSA_HOST_META]
 //
 
 llama_qsa_blk_table::tab & llama_qsa_blk_table::get(const llama_kv_cells * cells, uint32_t r) {

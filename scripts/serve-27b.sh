@@ -15,8 +15,7 @@ TARGET=$MODELS/Qwen3.8-27B-UD-Q4_K_XL.gguf
 MTP=$MODELS/mtp-Qwen3.8-27B-Q4_0.gguf
 DFLASH=$MODELS/Qwen3.8-27B-DFlash2-Q4_K_M.gguf
 
-export LLAMA_SPEC_REJECTION=1
-export LLAMA_SPEC_DRAFT_VOCAB=98304
+# rejection sampling and the 98,304-row draft vocabulary are the engine's defaults (ticket V5); only the model file's path is set here
 export LLAMA_SPEC_DRAFT_VOCAB_FILE=$ROOT/models/draft-vocab-qwen3.8-27b.txt
 
 case "$MODE" in
@@ -34,6 +33,6 @@ done
 
 exec "$BIN" --host "${LLAMA_HOST:-127.0.0.1}" --port "${LLAMA_PORT:-8080}" \
   -m "$TARGET" "${DRAFT[@]}" --spec-draft-n-max 7 \
-  -c 131072 -fa on -ngl 99 -ctk bf16 -ctv bf16 -ctkd bf16 -ctvd bf16 \
-  -t 12 -b 2048 -ub 512 --jinja --metrics --parallel 1 \
+  -c 131072 -fa on -ngl 99 -ctk f16 -ctv f16 -ctkd f16 -ctvd f16 \
+  -t 12 -b 4096 -ub 2048 --jinja --metrics --parallel 1 \
   --temp 1.0 --top-p 0.95 --top-k 20

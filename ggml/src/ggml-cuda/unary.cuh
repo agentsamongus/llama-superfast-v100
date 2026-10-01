@@ -124,10 +124,10 @@ __device__ __forceinline__ float ggml_cuda_op_swiglu_clamp_single(float gate, fl
 
 void ggml_cuda_op_shexp_gate_tail(ggml_backend_cuda_context & ctx, ggml_tensor * sigmoid, ggml_tensor * mul, ggml_tensor * add);
 
-// LLAMA_FOLD_ATTN_GATE: mul = attn * sigmoid(cont(gate view)), without the copy
+// ticket 0056, LLAMA_FOLD_ATTN_GATE: mul = attn * sigmoid(cont(gate view)), without the copy
 void ggml_cuda_op_cont_sigmoid_mul(ggml_backend_cuda_context & ctx, const ggml_tensor * cont, const ggml_tensor * sigmoid, ggml_tensor * mul);
 
-// LLAMA_FOLD_IDX_SUM: dst = the sum over dim 1 of relu(relu->src[0]), head by head, in one launch
+// ticket 0056, LLAMA_FOLD_IDX_SUM: dst = the sum over dim 1 of relu(relu->src[0]), head by head, in one launch
 void ggml_cuda_op_relu_head_sum(ggml_backend_cuda_context & ctx, const ggml_tensor * relu, ggml_tensor * dst);
 // the sum may sit on the score only if one block can hold all of it (LLAMA_FOLD_IDX_SUM=2: staged always, for the tests)
 bool ggml_cuda_relu_head_sum_fits_staged(const ggml_tensor * dst);

@@ -683,7 +683,7 @@ extern "C" {
         GGML_TENSOR_FLAG_PARAM   =  4, // ...contains trainable parameters
         GGML_TENSOR_FLAG_LOSS    =  8, // ...defines loss for numerical optimization (multiple loss tensors add up)
         GGML_TENSOR_FLAG_COMPUTE = 16, // ...must be computed
-        GGML_TENSOR_FLAG_BACKEND_LAYOUT = 32, // ...data is held in a backend-private layout: only that backend's matching op may read it
+        GGML_TENSOR_FLAG_BACKEND_LAYOUT = 32, // ...data is held in a backend-private layout (ticket 0078): only that backend's matching op may read it
     };
 
     enum ggml_tri_type {

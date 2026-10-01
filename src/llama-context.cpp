@@ -262,6 +262,7 @@ llama_context::llama_context(
     cparams.n_outputs_max_per_seq = params.n_outputs_max_per_seq == 0 ?
             cparams.n_outputs_max : std::min(params.n_outputs_max_per_seq, cparams.n_outputs_max);
 
+    // [TAG_LOGITS_DEFER]
     {
         const char * e = getenv("LLAMA_BACKEND_TOPK");
         logits_defer = e == nullptr || atoi(e) != 0;
@@ -630,7 +631,7 @@ void llama_context::sched_reserve() {
     gf_res_reserve.reset(new llm_graph_result(max_nodes));
     gf_res_prev_active = nullptr;
 
-    // the injection's scheduler and arena are made again on the next injection
+    // ticket 0101: the injection's scheduler and arena are made again on the next injection
     GGML_ASSERT(!inj_arena);
     gf_res_inj.reset();
     gf_res_inj_active = nullptr;
@@ -753,7 +754,7 @@ void llama_context::synchronize() {
     }
     GGML_RT_SCOPE("llm.synchronize");
 
-    // the live slot is older than the latest decode: wait only for its own outputs
+    // [TAG_SPEC_PIPELINE] the live slot is older than the latest decode: wait only for its own outputs
     if (pipe_live != pipe_newest && pipe_ev_set[pipe_live]) {
         ggml_backend_event_synchronize(pipe_ev[pipe_live]);
         return;
@@ -857,7 +858,7 @@ bool llama_context::memory_update(bool optimize) {
                 }
         }
 
-        // the memory update runs its own graphs
+        // [TAG_LOGITS_DEFER] the memory update runs its own graphs
         if (logits_dev.t != nullptr) {
             synchronize();
             logits_dev_fetch(-1);
@@ -872,7 +873,7 @@ bool llama_context::memory_update(bool optimize) {
             }
         }
         gf_res_prev_active = nullptr;
-        if (gf_res_inj) {
+        if (gf_res_inj) { // ticket 0101
             gf_res_inj->reset();
         }
         gf_res_inj_active = nullptr;
@@ -1502,7 +1503,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         // with pipeline parallelism, the previous graph_compute_async may still be running
         // on the GPU. we must synchronize before set_inputs to avoid overwriting input tensors
         // that the previous compute is still reading.
-        // an async decode keeps the copy slot of the decode in flight; the scheduler orders the
+        // [TAG_SPEC_PIPELINE] an async decode keeps the copy slot of the decode in flight; the scheduler orders the
         // input copies itself (ggml_backend_sched_set_pipe), and the outputs go to the other output slot
         if (cparams.pipeline_parallel && !pipe_async) {
             ggml_backend_sched_synchronize(sched.get());
@@ -1516,7 +1517,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         ggml_backend_sched_reset(sched.get());
         ggml_backend_sched_set_eval_callback(sched.get(), cparams.cb_eval, cparams.cb_eval_user_data);
 
-        // with pipeline parallelism every alloc takes the next input copy slot, so a decode-sized
+        // [TAG_SCHED_COPY0] with pipeline parallelism every alloc takes the next input copy slot, so a decode-sized
         // graph rebuilt each round (the draft's catch-up and step 0) gets different input-copy pointers every time,
         // and ggml-cuda re-captures its graph instead of launching the cached one. a synchronize while not
         // allocated puts the scheduler back on copy 0, as it already does between generation steps; the host reads
@@ -1556,7 +1557,7 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         gf_res_prev_active = res;
     }
 
-    // a reused graph keeps the record of its build
+    // [TAG_SPEC_PIPE_LOOSE] a reused graph keeps the record of its build
     qsa_last = res->qsa;
 
     // set the input data for the input tensors
@@ -1634,7 +1635,7 @@ int llama_context::encode(const llama_batch & batch_inp) {
         t_compute_start_us = ggml_time_us();
     }
 
-    // the previous batch's outputs are replaced
+    // [TAG_LOGITS_DEFER] the previous batch's outputs are replaced
     logits_dev = {};
     logits_dev_row.clear();
 
@@ -1859,7 +1860,7 @@ int llama_context::decode(const llama_batch & batch_inp) {
         return -1;
     }
 
-    // the graphs and host phases from here on belong to this context and batch size
+    // [TAG_ROUND_TIMERS] (ticket 0089) the graphs and host phases from here on belong to this context and batch size
     if (ggml_rt_on()) {
         ggml_rt_label(this, batch_inp.n_tokens);
     }
@@ -1874,7 +1875,7 @@ int llama_context::decode(const llama_batch & batch_inp) {
     const bool    mtp_embd = cparams.ctx_type == LLAMA_CONTEXT_TYPE_MTP && batch_inp.embd;
     // DFlash embd batches carry the fused target features at the encoder input width
     const bool    dflash_embd = model.arch == LLM_ARCH_DFLASH && batch_inp.embd;
-    // a device-fed injection reads no embd rows: the batch carries one float per token
+    // [TAG_DFLASH2_FEAT_DEV] (ticket 0101) a device-fed injection reads no embd rows: the batch carries one float per token
     const int64_t n_embd  = mtp_embd ? hparams.n_embd_out() : dflash_embd ? (cparams.inject_dev ? 1 : hparams.n_embd_inp_enc()) : hparams.n_embd_inp();
 
     // when computing embeddings, all tokens are output
@@ -1949,11 +1950,11 @@ int llama_context::decode(const llama_batch & batch_inp) {
 
     output_swaps.clear();
 
-    // the previous batch's outputs are replaced
+    // [TAG_LOGITS_DEFER] the previous batch's outputs are replaced
     logits_dev = {};
     logits_dev_row.clear();
 
-    // an async decode: the other slot's deferred logits are about to be overwritten by this
+    // [TAG_SPEC_PIPELINE] an async decode: the other slot's deferred logits are about to be overwritten by this
     // decode's graph output, so move them aside first; the scheduler orders the copies into the reused input slot
     if (sched) {
         ggml_backend_sched_set_pipe(sched.get(), pipe_async);
@@ -1973,7 +1974,7 @@ int llama_context::decode(const llama_batch & batch_inp) {
     // handle any pending shifts/copies
     memory_update(false);
 
-    // a DFlash2 draft's injection runs on its own scheduler and graph arena (inj_arena_swap), restored on every return
+    // ticket 0101: a DFlash2 draft's injection runs on its own scheduler and graph arena (inj_arena_swap), restored on every return
     static const bool inj_arena_on = [] { const char * e = getenv("LLAMA_DFLASH2_INJ_ARENA"); return e == nullptr || atoi(e) != 0; }();
     struct inj_guard {
         llama_context * ctx;
@@ -2029,7 +2030,7 @@ int llama_context::decode(const llama_batch & batch_inp) {
         break;
     }
 
-    // keep the previous decode's recurrent snapshots, which this decode overwrites
+    // [TAG_SPEC_PIPELINE] keep the previous decode's recurrent snapshots, which this decode overwrites
     if (pipe_backup) {
         pipe_rs_backup(batch_inp);
     }
@@ -2075,7 +2076,7 @@ int llama_context::decode(const llama_batch & batch_inp) {
             n_outputs = n_outputs_new;
         }
 
-        // the next ubatch reuses the graph output: copy the pending raw logits first
+        // [TAG_LOGITS_DEFER] the next ubatch reuses the graph output: copy the pending raw logits first
         if (logits_dev.t != nullptr) {
             const int64_t n_vocab_dev = vocab.n_tokens();
             ggml_backend_tensor_get_async(logits_dev.backend, logits_dev.t, logits.data + logits_dev.row0*n_vocab_dev,
@@ -2086,7 +2087,7 @@ int llama_context::decode(const llama_batch & batch_inp) {
 
         ggml_status status;
 
-        // a held decode stops before its last GPU's splits (one ubatch only)
+        // [TAG_SPEC_PIPELINE] a held decode stops before its last GPU's splits (one ubatch only)
         ggml_backend_t hold_be = nullptr;
         if (pipe_hold && sched) {
             GGML_ASSERT(n_tokens_all <= cparams.n_ubatch && !cparams.embeddings && "a held decode is one ubatch");
@@ -2140,7 +2141,7 @@ int llama_context::decode(const llama_batch & batch_inp) {
         //    ggml_graph_dump_dot(gf, NULL, "llama.dot");
         //}
 
-        // held: the outputs do not exist yet, pipe_resume extracts them
+        // [TAG_SPEC_PIPELINE] held: the outputs do not exist yet, pipe_resume extracts them
         if (hold_be && ggml_backend_sched_is_held(sched.get())) {
             pipe_held.active = true;
             pipe_held.slot   = pipe_live;
@@ -2161,10 +2162,10 @@ int llama_context::decode(const llama_batch & batch_inp) {
             t_embd = res->get_embd_pooled();
         }
 
-        // logits over a vocabulary subset exist only for the backend samplers: they are never copied
+        // [TAG_DRAFT_VOCAB] logits over a vocabulary subset exist only for the backend samplers: they are never copied
         // out, so every output row must have one
         if (t_logits && t_logits->ne[0] != n_vocab) {
-            // a DFlash2 draft never reads its logits (its selector's lattice is its output), e.g. a warmup's
+            // (ticket 0101) a DFlash2 draft never reads its logits (its selector's lattice is its output), e.g. a warmup's
             GGML_ASSERT((model.arch == LLM_ARCH_DFLASH || !needs_raw_logits(ubatch, sampling.samplers)) && "a head subset needs a backend sampler on every output");
         } else
         // extract logits
@@ -2181,7 +2182,7 @@ int llama_context::decode(const llama_batch & batch_inp) {
                 ggml_backend_tensor_get_async(backend_res, t_logits, logits_out, 0, n_outputs*n_vocab*sizeof(float));
             }
         } else if (logits_defer && logits.data && t_logits && n_outputs > 0) {
-            // every output has a backend sampler: leave the raw logits on the device
+            // [TAG_LOGITS_DEFER] every output has a backend sampler: leave the raw logits on the device
             ggml_backend_t backend_res = ggml_backend_sched_get_tensor_backend(sched.get(), t_logits);
             GGML_ASSERT(backend_res != nullptr);
             GGML_ASSERT( n_outputs_prev + n_outputs <= n_outputs_all);
@@ -2253,7 +2254,7 @@ int llama_context::decode(const llama_batch & batch_inp) {
             }
         }
 
-        // a one-ubatch decode of few tokens (a verify) keeps its layer inputs on the device
+        // [TAG_DFLASH2_FEAT_DEV] (ticket 0101) a one-ubatch decode of few tokens (a verify) keeps its layer inputs on the device
         if (cparams.layer_inp_dev_rows > 0 && n_tokens_prev == 0 && ubatch.n_tokens == n_tokens_all &&
                 (int32_t) ubatch.n_tokens <= cparams.layer_inp_dev_rows) {
             layer_inp_dev_t.clear();
@@ -2357,7 +2358,7 @@ int llama_context::decode(const llama_batch & batch_inp) {
         }
     }
 
-    // mark the end of this slot's output copies
+    // [TAG_SPEC_PIPELINE] mark the end of this slot's output copies
     pipe_newest = pipe_live;
     if (pipe_async && !(pipe_held.active && pipe_held.slot == pipe_live)) {
         ggml_backend_t be = nullptr;
@@ -2391,7 +2392,7 @@ int llama_context::decode(const llama_batch & batch_inp) {
 }
 
 //
-// pipelined speculative decoding
+// [TAG_SPEC_PIPELINE] pipelined speculative decoding (ticket 0055)
 //
 
 void llama_context::pipe_swap() {
@@ -2821,7 +2822,7 @@ void llama_context::output_reorder() {
         const uint64_t i0 = output_swaps[s].i0;
         const uint64_t i1 = output_swaps[s].i1;
 
-        // a row still on the device moves with its mapping; two such rows need no copy
+        // [TAG_LOGITS_DEFER] a row still on the device moves with its mapping; two such rows need no copy
         const bool dev0 = i0 < logits_dev_row.size() && logits_dev_row[i0] >= 0;
         const bool dev1 = i1 < logits_dev_row.size() && logits_dev_row[i1] >= 0;
         if (dev0 || dev1) {
@@ -2865,7 +2866,7 @@ void llama_context::output_reorder() {
             assert(sampling.probs_count.size() > 0);
             assert(sampling.candidates_count.size() > 0);
 
-            // only the first *_count entries of a row are ever read
+            // [TAG_LOGITS_DEFER] only the first *_count entries of a row are ever read
             const uint64_t n_l = logits_defer ? std::max(sampling.logits_count[i0],     sampling.logits_count[i1])     : n_vocab;
             const uint64_t n_p = logits_defer ? std::max(sampling.probs_count[i0],      sampling.probs_count[i1])      : n_vocab;
             const uint64_t n_c = logits_defer ? std::max(sampling.candidates_count[i0], sampling.candidates_count[i1]) : n_vocab;
@@ -3045,7 +3046,7 @@ ggml_cgraph * llama_context::graph_reserve(
         LLAMA_LOG_DEBUG("%s: making n_tokens a multiple of n_seqs - n_tokens = %u, n_seqs = %u, n_outputs = %u\n", __func__, n_tokens, n_seqs, n_outputs);
     }
 
-    // the reserve reuses the graph outputs
+    // [TAG_LOGITS_DEFER] the reserve reuses the graph outputs
     if (logits_dev.t != nullptr) {
         synchronize();
         logits_dev_fetch(-1);

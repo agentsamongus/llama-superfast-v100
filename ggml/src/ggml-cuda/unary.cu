@@ -277,7 +277,7 @@ static __global__ void unary_gated_op_kernel(const T * x, const T * g, T * dst, 
     dst[i] = (T)(op((float)x[j0]) * (float)g[j1]);
 }
 
-// unary_gated_op_kernel for a float dst that is the input of products on repacked weights (the FFN
+// unary_gated_op_kernel for a float dst that is the input of products on repacked weights (ticket 0090; the FFN
 // SwiGLU): the same thread per value and the same expression, in blocks of 256 = one 256-column slice of one row
 // (nc a multiple of 256); the block's values also go to shared memory, and its first warp writes the slice's prepared
 // input (qpn-source.cuh); row = token.
@@ -303,7 +303,7 @@ static __global__ void unary_gated_qpn_kernel(const float * x, const float * g, 
     }
 }
 
-// the float gated op over T <= 8 rows of nc columns as unary_gated_qpn_kernel, if dst is a planned
+// ticket 0090: the float gated op over T <= 8 rows of nc columns as unary_gated_qpn_kernel, if dst is a planned
 // prepared-at-source input; false otherwise
 template <float (*op)(float)>
 static bool unary_gated_qpn(const float * x, const float * g, const ggml_tensor * dst_t, const int64_t nc, const int64_t o0, const int64_t o1, cudaStream_t stream) {
@@ -766,7 +766,7 @@ void ggml_cuda_op_relu_sqr(ggml_backend_cuda_context & ctx, ggml_tensor * relu_n
     }
 }
 
-// The shared expert's gated tail, SIGMOID -> MUL -> ADD, in one launch (LLAMA_FOLD_SHEXP_TAIL):
+// The shared expert's gated tail, SIGMOID -> MUL -> ADD, in one launch (ticket 0043, LLAMA_FOLD_SHEXP_TAIL):
 // dst[i0, t] = moe[i0, t] + shexp[i0, t] * sigmoid(gate[t]). Each operation is rounded on its own, as the
 // three separate kernels store it (no contraction of the multiply into the add), so dst is bit-identical.
 static __global__ void shexp_gate_tail_f32(const float * moe, const float * shexp, const float * gate, float * dst,
@@ -799,7 +799,7 @@ void ggml_cuda_op_shexp_gate_tail(ggml_backend_cuda_context & ctx, ggml_tensor *
 }
 
 // The attention output gate, CONT of the gate's strided view -> SIGMOID -> MUL with the attention output
-// (LLAMA_FOLD_ATTN_GATE), in one launch: each thread reads its gate element through the view
+// (ticket 0056, LLAMA_FOLD_ATTN_GATE), in one launch: each thread reads its gate element through the view
 // instead of the copy (the copy moves the value unchanged) and forms op_sigmoid(gate) * attn as
 // unary_gated_op_kernel does, so dst is bit-identical.
 static __global__ void cont_sigmoid_mul_f32(const char * gate, const float * attn, float * dst, const int64_t n,
@@ -820,7 +820,7 @@ static __global__ void cont_sigmoid_mul_f32(const char * gate, const float * att
     dst[i] = op_sigmoid(g) * attn[(i / nc)*s_attn1 + (i % nc)];
 }
 
-// cont_sigmoid_mul_f32 for a product that is the input of products on repacked weights (the attention
+// cont_sigmoid_mul_f32 for a product that is the input of products on repacked weights (ticket 0090; the attention
 // output): the same thread per value and the same expression, in blocks of 256 = one 256-column slice of one row (K a
 // multiple of 256); the block's values also go to shared memory, and its first warp writes the slice's prepared input
 // (qpn-source.cuh); row = token.
@@ -856,7 +856,7 @@ void ggml_cuda_op_cont_sigmoid_mul(ggml_backend_cuda_context & ctx, const ggml_t
 
     const int64_t n = ggml_nelements(mul);
 
-    // T <= 8 rows of K columns, the input of products on repacked weights
+    // ticket 0090: T <= 8 rows of K columns, the input of products on repacked weights
     const int64_t K = mul->ne[0], T = ggml_nrows(mul);
     ggml_cuda_qpn_dst q;
     if (K % QK_K == 0 && T <= 8 && ggml_cuda_qpn_source_begin(mul, K, (int) T, ctx.stream(), &q)) {
@@ -879,7 +879,7 @@ void ggml_cuda_op_cont_sigmoid_mul(ggml_backend_cuda_context & ctx, const ggml_t
 }
 
 // qwen4exp's QSA indexer score sum over its heads, RELU -> CONT of head 0 -> ADD of each further head in order
-// (LLAMA_FOLD_IDX_SUM), in one launch: dst[b, t, s] = ((relu(x[b, 0]) + relu(x[b, 1])) + ...), with
+// (ticket 0056, LLAMA_FOLD_IDX_SUM), in one launch: dst[b, t, s] = ((relu(x[b, 0]) + relu(x[b, 1])) + ...), with
 // op_relu and each sum rounded on its own, as the relu kernel, the copy and the adds (fused or not) form them.
 static __global__ void relu_head_sum_f32(const float * x, float * dst, const int64_t n, const int64_t ne0,
         const int64_t ne1, const int n_h, const int64_t sx1, const int64_t sx2, const int64_t sx3) {

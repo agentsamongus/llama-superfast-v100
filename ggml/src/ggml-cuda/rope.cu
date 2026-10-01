@@ -940,8 +940,8 @@ void ggml_cuda_op_rms_norm_mul_rope_fused(ggml_backend_cuda_context & ctx,
     }
 }
 
-// RMS_NORM -> MUL by the norm weight -> ROPE multi (M-RoPE or IMRoPE, not vision), F32, in one launch (LLAMA_FOLD_NORM_ROPE)
-// One block per row. rms_norm_f32<block_size, true>'s loops, reduction and store
+// RMS_NORM -> MUL by the norm weight -> ROPE multi (M-RoPE or IMRoPE, not vision), F32, in one launch (ticket
+// 0056, LLAMA_FOLD_NORM_ROPE): one block per row. rms_norm_f32<block_size, true>'s loops, reduction and store
 // expression give the normed row, which stays in shared memory; then each pair is rotated with rope_multi's
 // statements, reading x0 and x1 from there, and the channels outside the rotated window are copied, as
 // rope_multi copies them when not in place. Every value is rounded as the separate kernels round it.

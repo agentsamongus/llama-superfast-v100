@@ -446,7 +446,7 @@ void get_rows_cuda(
     }
 }
 
-// Float rows gathered into a dst that is the input of products on repacked weights (the output rows
+// Float rows gathered into a dst that is the input of products on repacked weights (ticket 0090; the output rows
 // before the head): one warp per (256-column slice, gathered row), each lane copying 8 consecutive values as
 // k_get_rows_float does, then the slice's prepared input (qpn-source.cuh); gathered row = token. A negative index
 // leaves its row unwritten, as there, and the prepared input is made from what the row holds. Rows 16-byte aligned.
@@ -493,7 +493,7 @@ void ggml_cuda_op_get_rows(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     GGML_ASSERT(src1->nb[0] == ggml_type_size(src1->type));
     GGML_ASSERT(dst->nb[0]  == ggml_type_size(dst->type));
 
-    // T <= 8 float rows of K columns gathered from one matrix, the input of products on repacked weights
+    // ticket 0090: T <= 8 float rows of K columns gathered from one matrix, the input of products on repacked weights
     ggml_cuda_qpn_dst q;
     if (src0->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32 && ne11 == 1 && ne12 == 1 && ne02 == 1 && ne03 == 1 &&
         ggml_is_contiguous(dst) && ne00 % QK_K == 0 && nb01 % 16 == 0 && (uintptr_t) src0->data % 16 == 0 &&

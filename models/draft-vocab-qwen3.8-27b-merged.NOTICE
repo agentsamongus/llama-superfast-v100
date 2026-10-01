@@ -1,0 +1,12 @@
+draft-vocab-qwen3.8-27b-merged.txt (ticket 0082): a draft-vocabulary ranking for the Qwen3.8-27B MTP draft's head subset
+(LLAMA_SPEC_DRAFT_VOCAB_FILE), token ids most frequent first, padding ids 248077.. never listed; the engine adds the real
+special tokens itself. Not the default list: it did not beat draft-vocab-qwen3.8-27b.txt on pooled tok/s over the
+poetry and CSV prompts, which that list saw; it covers broader held-out traffic better (ticket 0082's Result).
+
+Score: 0.5 x NInfer's token counts reweighted by stratum (en_chat 0.50, code 0.30, math 0.10, other_chat 0.05,
+zh_chat 0.05, each stratum normalized) + 0.5 x ticket 0077's normalized mixture (the 27B's and Flash-Next's outputs,
+general prose, general code); ties by id.
+
+The counts are NInfer's (https://github.com/neroued/ninfer-v100, Apache License 2.0),
+tools/freq_corpus/fixtures/ranking/ranking.train.counts.i64: the teacher-forced argmax of Qwen3.6-27B over about
+51M assistant tokens of chat, code and math. Only the counts are used; no NInfer code.

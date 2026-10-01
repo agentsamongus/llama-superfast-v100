@@ -171,7 +171,7 @@ struct common_speculative_impl {
 
     virtual bool process(const llama_batch & batch) = 0;
 
-    // the prompt about to be prefilled for seq_id ends at position n_end, and the server may take a
+    // (optional, ticket 0101) the prompt about to be prefilled for seq_id ends at position n_end, and the server may take a
     // checkpoint at each position in marks; see common_speculative_prefill_plan
     virtual void prefill_plan(llama_seq_id /*seq_id*/, llama_pos /*n_end*/, const std::vector<llama_pos> & /*marks*/) {}
 
@@ -183,7 +183,7 @@ struct common_speculative_impl {
     virtual bool get_state(llama_seq_id /*seq_id*/, std::vector<uint8_t> & /*data*/) const { return false; }
     virtual void set_state(llama_seq_id /*seq_id*/, const std::vector<uint8_t> & /*data*/) {}
 
-    // (optional) pipelined drafting, see common_speculative_pipe_* in speculative.h
+    // [TAG_SPEC_PIPELINE] (optional) pipelined drafting, see common_speculative_pipe_* in speculative.h
     virtual bool pipe_enable() { return false; }
     virtual const std::vector<float> * pipe_probs(llama_seq_id /*seq_id*/) const { return nullptr; }
     virtual bool pipe_process(llama_seq_id /*seq_id*/, const llama_token * /*toks*/, int32_t /*n*/, llama_pos /*pos0*/, llama_token /*extra*/) { return false; }
@@ -192,12 +192,12 @@ struct common_speculative_impl {
     virtual bool pipe_rebase(llama_seq_id /*seq_id*/) { return false; }
 };
 
-// the draft token sampled from the draft's distribution q (its candidates cur_p through the
+// [TAG_SPEC_REJECTION] the draft token sampled from the draft's distribution q (its candidates cur_p through the
 // copy of the target's sampler, LLAMA_SPEC_REJECTION_TEMP), with a draw from the target's sampler, and accepted
 // into the copy; q is appended to dp.q. where the copy cannot follow the target, the forced token or the argmax,
 // with an empty row. p: the draft's probability of the token (q(x); 1 for a forced token). cur_p->data[0] is the
-// argmax. with gen, the draw comes from gen instead. shared by MTP and, since
-// DFlash2's sampled draft
+// argmax. [TAG_SPEC_REJECTION_PIPE] with gen, the draw comes from gen instead (ticket 0070). shared by MTP and, since
+// ticket 0100, DFlash2's sampled draft
 static llama_token common_speculative_rejection_pick(common_sampler * copy, common_sampler * smpl_tgt, std::mt19937 * gen,
         std::vector<common_rejection_q> & q, const llama_token_data_array * cur_p, float & p) {
     GGML_RT_SCOPE("spec.rejection_pick");
@@ -217,7 +217,7 @@ static llama_token common_speculative_rejection_pick(common_sampler * copy, comm
         }
     }
     q.push_back(std::move(row));
-    common_sampler_accept_draft(copy, id); // the argmax fallback need not fit a triggered grammar
+    common_sampler_accept_draft(copy, id); // (ticket 0071) the argmax fallback need not fit a triggered grammar
     return id;
 }
 
@@ -951,10 +951,10 @@ struct common_speculative_impl_draft_eagle3 : public common_speculative_impl {
     }
 };
 
-// (MTP, and DFlash2) LLAMA_SPEC_DRAFT_VOCAB=<K>: the draft computes its logits over K tokens only: the vocabulary's real
+// [TAG_DRAFT_VOCAB] (MTP, ticket 0101 also DFlash2) LLAMA_SPEC_DRAFT_VOCAB=<K>: the draft computes its logits over K tokens only: the vocabulary's real
 // special tokens (control and user-defined, e.g. <|im_end|>, <think>, <tool_call>; never the unused padding ids), then
 // the first distinct ids of the ranking in LLAMA_SPEC_DRAFT_VOCAB_FILE (whitespace-separated token ids, most frequent
-// first). There is no built-in size: K unset or -1 takes every id of the file, 0 turns the subset off,
+// first). There is no built-in size (ticket 0082), but K unset takes 98304 (ticket V5), -1 takes every id of the file, 0 turns the subset off,
 // and a file with fewer ids than K gives what it has. K is at least the draft's candidate count top_k, and is rounded
 // up to a multiple of 4 with the next ranked ids (down, if the file runs out), because the 1-column head product takes
 // 4 rows per block only then (mmvq.cu, LLAMA_MMVQ_DENSE1) and otherwise falls back to a slower kernel. A draft token
@@ -963,7 +963,9 @@ struct common_speculative_impl_draft_eagle3 : public common_speculative_impl {
 static bool common_speculative_draft_vocab_ids(const llama_model * model, const int32_t top_k, std::vector<llama_token> & ids_out, std::string & what) {
     const char * ek = getenv("LLAMA_SPEC_DRAFT_VOCAB");
     const char * ef = getenv("LLAMA_SPEC_DRAFT_VOCAB_FILE");
-    int32_t k = -1;
+    // ticket V5: K unset takes 98304 (the deployed launch's value; -1 still takes every id of the file). The file path stays
+    // a per-launch choice (a model file): with neither variable set the subset stays off
+    int32_t k = 98304;
     if (ek != nullptr && *ek != '\0') {
         char * end = nullptr;
         errno = 0;
@@ -1097,14 +1099,14 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
     const int32_t * target_layer_ids   = nullptr; // model_dft's extract layer indices
     uint32_t        target_layer_ids_n = 0;
 
-    // the prefill plan per seq (prefill_plan): the prompt's end and the checkpoint marks, and the draft's window: a
+    // (ticket 0101) the prefill plan per seq (prefill_plan): the prompt's end and the checkpoint marks, and the draft's window: a
     // query at position p sees keys at positions > p - n_swa, so a draft at pos0 >= n_end needs the rows from n_end - (n_swa - 1)
     std::vector<llama_pos>              plan_end;
     std::vector<std::vector<llama_pos>> plan_marks;
     int32_t                             n_swa_dft = 0;
     std::vector<int64_t>                plan_rows_seen, plan_rows_injected; // per seq, since the plan was set (logged at begin)
 
-    // the target keeps a verify's layer inputs on the device and the injection copies them there
+    // (ticket 0101) the target keeps a verify's layer inputs on the device and the injection copies them there
     bool feat_dev = false;
 
     common_speculative_impl_draft_dflash(const common_params_speculative & params, uint32_t n_seq,
@@ -1147,7 +1149,7 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
         is_dflash2     = selector_top_k > 0;
         mask_token_id = llama_vocab_mask(llama_model_get_vocab(model_dft));
 
-        // LLAMA_DFLASH2_VOCAB (default 1; 0 = the full head): DFlash2's LM head over the draft
+        // [TAG_DRAFT_VOCAB] (ticket 0101) LLAMA_DFLASH2_VOCAB (default 1; 0 = the full head): DFlash2's LM head over the draft
         // vocabulary of LLAMA_SPEC_DRAFT_VOCAB and LLAMA_SPEC_DRAFT_VOCAB_FILE (MTP's), its rows taken from output.weight of the GGUF
         // in LLAMA_DFLASH2_HEAD_FILE (the MTP draft's own Q3_K head) when set, otherwise from the target's head it borrows. The
         // selector's top-k then runs over the subset and maps its candidates back to token ids (dflash.cpp); a drafted token
@@ -1233,7 +1235,7 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
             llama_set_embeddings_layer_inp(ctx_tgt, (uint32_t) target_layer_ids[k], true);
         }
 
-        // LLAMA_DFLASH2_FEAT_DEV (default 1): a verify-sized target decode (one ubatch of at most
+        // [TAG_DFLASH2_FEAT_DEV] (ticket 0101) LLAMA_DFLASH2_FEAT_DEV (default 1): a verify-sized target decode (one ubatch of at most
         // 64 rows) keeps its layer inputs on the device, and the injection copies them device to device on the GPU's streams, instead
         // of device -> host -> device with a wait; larger decodes (prefill) still go through the host. The device path takes the
         // layers in ascending order, as the host path's slots are, so it needs ascending target_layer_ids
@@ -1249,7 +1251,7 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
             }
         }
 
-        // the prefill plan, LLAMA_DFLASH2_INJECT_WINDOW (default 1): only for a draft whose every layer is a sliding window
+        // (ticket 0101) the prefill plan, LLAMA_DFLASH2_INJECT_WINDOW (default 1): only for a draft whose every layer is a sliding window
         {
             const char * e = getenv("LLAMA_DFLASH2_INJECT_WINDOW");
             n_swa_dft = (e == nullptr || atoi(e) != 0) && llama_model_all_swa(model_dft) ? llama_model_n_swa(model_dft) : 0;
@@ -1286,7 +1288,7 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
             return;
         }
 
-        // the prefill is done: every later row is injected
+        // (ticket 0101) the prefill is done: every later row is injected
         if (plan_end[seq_id] >= 0) {
             LOG_INF("%s: seq %d: the prefill injected %" PRId64 " of %" PRId64 " rows (prompt end %d, %zu checkpoint marks, window %d)\n", __func__,
                     (int) seq_id, plan_rows_injected[seq_id], plan_rows_seen[seq_id], (int) plan_end[seq_id], plan_marks[seq_id].size(), n_swa_dft - 1);
@@ -1317,7 +1319,7 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
         plan_rows_injected[seq_id] = 0;
     }
 
-    // whether the row at position p is injected: with a prefill plan, only rows a later draft's window reaches, i.e.
+    // (ticket 0101) whether the row at position p is injected: with a prefill plan, only rows a later draft's window reaches, i.e.
     // within n_swa - 1 before the prompt's end or before a checkpoint mark (a restore there resumes with the rows before it). Without
     // a plan (decode, or no sliding window), every row
     bool inject_row(llama_seq_id seq_id, llama_pos p) const {
@@ -1374,7 +1376,7 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
 
         const int32_t n_ubatch = (int32_t) llama_n_ubatch(ctx_dft);
 
-        // the target held this decode's layer inputs on the device (a verify): the one sequence's
+        // [TAG_DFLASH2_FEAT_DEV] (ticket 0101) the target held this decode's layer inputs on the device (a verify): the one sequence's
         // rows, all of them, go to the injection device to device. Otherwise they are read back from the host copies
         const int32_t n_dev = feat_dev ? llama_get_embeddings_layer_inp_dev_rows(ctx_tgt) : 0;
 
@@ -1391,12 +1393,12 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
                 continue;
             }
 
-            // the target held this decode's features on the device only (no host copy): the injection takes
+            // [TAG_DFLASH2_FEAT_DEV] the target held this decode's features on the device only (no host copy): the injection takes
             // all its rows from there. It does so only for one sequence's small batch (feat_dev needs n_seq == 1)
             const bool dev = n_dev > 0;
             GGML_ASSERT(!dev || (n_dev == n_tokens && n_rows == n_tokens && n_rows <= n_ubatch));
 
-            // the rows a later draft can see (inject_row), in batch order; with the device path every row (a small
+            // (ticket 0101) the rows a later draft can see (inject_row), in batch order; with the device path every row (a small
             // prefill batch ends at a checkpoint mark or at the prompt's end, so its rows are within the window anyway)
             std::vector<int32_t> rows;
             rows.reserve(n_rows);
@@ -1484,7 +1486,8 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
 
             const int32_t n = (int32_t) dp.pos0;
 
-            const int32_t n_draft = params.n_max;
+            // [TAG_SPEC_ADAPT_WIDTH] (ticket 0120) a narrowed round drafts a block of that width, as a launch at that n-max does
+            const int32_t n_draft = dp.n_cap > 0 ? std::min(params.n_max, dp.n_cap) : params.n_max;
 
             const int32_t n_block_tokens = n_draft + (is_dspark && sample_from_anchor ? 0 : 1);
             i_block_beg[seq_id] = batch.n_tokens;
@@ -1518,7 +1521,7 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
 
             auto & result = *dp.result;
 
-            // with LLAMA_SPEC_REJECTION and a target sampler that can take the
+            // [TAG_SPEC_REJECTION] (ticket 0099, 0100) with LLAMA_SPEC_REJECTION and a target sampler that can take the
             // rejection step, each position's candidates (distinct ids: ggml_top_k), with their selector scores given
             // the predecessor as logits, go through common_speculative_rejection_pick as MTP's do: q is the candidates
             // through a copy of the target's sampler chain (LLAMA_SPEC_REJECTION_TEMP), the draw is the target's (or
@@ -1527,7 +1530,7 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
             // forced token outside the candidates ends the draft. p_min truncates on the largest probability of the
             // token's row (1 for a forced token, the selector's softmax at the argmax for an argmax fallback).
             // otherwise (the toggle off, T=0, a chain that does not end in dist) the argmax loop below, unchanged
-            // the sampled draft is the default under LLAMA_SPEC_REJECTION; LLAMA_DFLASH2_GREEDY=1 keeps the argmax walk
+            // (ticket 0101) the sampled draft is the default under LLAMA_SPEC_REJECTION; LLAMA_DFLASH2_GREEDY=1 keeps the argmax walk
             static const bool greedy = [] { const char * e = getenv("LLAMA_DFLASH2_GREEDY"); return e != nullptr && atoi(e) != 0; }();
             if (is_dflash2 && !greedy && dp.q && dp.smpl_tgt && common_speculative_rejection() && common_sampler_rejection_ok(dp.smpl_tgt)) {
                 const float * lattice = llama_get_embeddings_nextn(ctx_dft);
@@ -1539,7 +1542,9 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
 
                 std::vector<llama_token_data> cand(selector_top_k);
                 int32_t predecessor = 0;
-                for (int32_t i = 1; i < n_block_tokens; ++i) {
+                // [TAG_SPEC_ADAPT_WIDTH] (ticket 0120) the server's cap on this round's draft length, by depth and acceptance
+                const int32_t n_take = dp.n_cap > 0 ? std::min(dp.n_cap, n_block_tokens - 1) : n_block_tokens - 1;
+                for (int32_t i = 1; i < n_block_tokens && (int32_t) result.size() < n_take; ++i) {
                     const float * row = lattice + (size_t) (beg + i) * n_embd_dec;
                     const float * scores = row + selector_top_k + (size_t) predecessor * selector_top_k;
 
@@ -1591,7 +1596,8 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
                 GGML_ASSERT(lattice && "DFlash2 selector produced no lattice");
 
                 int32_t predecessor = 0;
-                for (int32_t i = 1; i < n_block_tokens; ++i) {
+                const int32_t n_take = dp.n_cap > 0 ? std::min(dp.n_cap, n_block_tokens - 1) : n_block_tokens - 1;
+                for (int32_t i = 1; i < n_block_tokens && (int32_t) result.size() < n_take; ++i) {
                     const float * row = lattice + (size_t) (beg + i) * n_embd_dec;
                     const float * scores = row + selector_top_k + (size_t) predecessor * selector_top_k;
 
@@ -1716,23 +1722,23 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
     std::vector<int>                i_last;
     std::vector<std::vector<float>> chain_h;
 
-    // the draft's hidden row that pairs with the next token to feed, per seq: set by draft() for
+    // [TAG_SPEC_PIPELINE] the draft's hidden row that pairs with the next token to feed, per seq: set by draft() for
     // its last drafted token, by pipe_process() for its extra token, and by pipe_chain() for its last drafted token
     bool                            pipe_on = false;
     std::vector<std::vector<float>> pipe_h;
     std::vector<std::vector<float>> pipe_p; // the draft's probability of each token drafted since the last draft() start
 
-    // per seq, the copy of the target's sampler that picks the draft tokens of the current draft()
+    // [TAG_SPEC_COUPLED] per seq, the copy of the target's sampler that picks the draft tokens of the current draft()
     std::vector<common_sampler_ptr> coupled;
-    // per seq, whether the current draft() samples its tokens for the rejection step (the copy
+    // [TAG_SPEC_REJECTION] per seq, whether the current draft() samples its tokens for the rejection step (the copy
     // is then coupled[seq_id], and the draws come from the target's sampler)
     std::vector<bool> rejection;
-    // --spec-draft-n-max, the draft length of a request that does not take
+    // [TAG_SPEC_REJECTION_ADAPT] (ticket 0073) --spec-draft-n-max, the draft length of a request that does not take
     // the rejection step, and per seq the product of q over the current draft()'s drafted tokens
     int32_t             n_max_base = 0;
     std::vector<double> rs_prod;
 
-    // the draft's LM head subset over common_speculative_draft_vocab_ids (shared with DFlash2)
+    // [TAG_DRAFT_VOCAB] the draft's LM head subset over common_speculative_draft_vocab_ids (ticket 0101: shared with DFlash2)
     static void draft_vocab_init(const llama_model * model, const int32_t top_k) {
         std::vector<llama_token> ids;
         std::string what;
@@ -1775,7 +1781,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
         // TODO: fix, how to call without malloc
         batch.token = (llama_token *) malloc(sizeof(llama_token) * n_b);
 
-        // the candidates per row: 10, or with coupled drafting as many as the target's device
+        // [TAG_SPEC_COUPLED] the candidates per row: 10, or with coupled drafting as many as the target's device
         // top-k returns (params.top_k), so the target's chain applied to them gives what it gives on the full row
         const int32_t top_k = std::max(10, this->params.top_k);
 
@@ -1806,7 +1812,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
             }
         }
 
-        // the head subset exists only for the backend samplers, so every sequence needs one
+        // [TAG_DRAFT_VOCAB] the head subset exists only for the backend samplers, so every sequence needs one
         if (std::all_of(backend_chains.begin(), backend_chains.end(), [](llama_sampler * c) { return c != nullptr; })) {
             draft_vocab_init(llama_get_model(ctx_dft), top_k);
         }
@@ -1817,7 +1823,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
         is_mem_shared = llama_get_ctx_other(ctx_dft) == ctx_tgt;
         chain_heads   = n_mtp_layers > 1 && !is_mem_shared;
 
-        // drafts up to LLAMA_SPEC_REJECTION_NMAX under rejection sampling
+        // [TAG_SPEC_REJECTION_ADAPT] (ticket 0073) drafts up to LLAMA_SPEC_REJECTION_NMAX under rejection sampling
         n_max_base = this->params.n_max;
         rs_prod.assign(n_seq, 1.0);
         if (common_speculative_rejection_nmax() > this->params.n_max) {
@@ -2024,7 +2030,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
             if (pipe_on) {
                 pipe_p[seq_id].clear();
             }
-            // rejection sampling takes precedence over coupled drafting
+            // [TAG_SPEC_REJECTION] rejection sampling takes precedence over coupled drafting
             rejection[seq_id] = common_speculative_rejection() && dp.q && dp.smpl_tgt && common_sampler_rejection_ok(dp.smpl_tgt);
             if (dp.q) {
                 dp.q->clear();
@@ -2099,7 +2105,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                     continue;
                 }
 
-                // add drafted token for each sequence: the argmax, or the pick through the copy of
+                // add drafted token for each sequence: the argmax, or [TAG_SPEC_COUPLED] the pick through the copy of
                 // the target's sampler
                 float p_id = cur_p->data[0].p;
                 const llama_token id = rejection[seq_id] ? common_speculative_rejection_pick(coupled[seq_id].get(), dparams[seq_id].smpl_tgt, dparams[seq_id].q_rng, *dparams[seq_id].q, cur_p, p_id) :
@@ -2122,7 +2128,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                     pipe_p[seq_id].push_back(p_id);
                 }
 
-                // a request that takes the rejection step drafts up to
+                // [TAG_SPEC_REJECTION_ADAPT] (ticket 0073) a request that takes the rejection step drafts up to
                 // LLAMA_SPEC_REJECTION_NMAX, and drafts the next token only while the product of q over the tokens
                 // drafted so far stays at least the cutoff; others keep --spec-draft-n-max
                 const bool adapt = rejection[seq_id] && common_speculative_rejection_nmax() > 0;
@@ -2186,7 +2192,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
         }
     }
 
-    // the draft token picked from the draft's candidates cur_p (sorted) through the copy of the
+    // [TAG_SPEC_COUPLED] the draft token picked from the draft's candidates cur_p (sorted) through the copy of the
     // target's sampler, accepted into it; the draft's argmax when the copy cannot follow the target. p: the draft's
     // probability of the picked token (1 for a token the reasoning budget forces, 0 for one outside the candidates)
     static bool coupled_debug() {
@@ -2196,7 +2202,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
 
     // near-tie guard (LLAMA_SPEC_COUPLED_TIE, default 0.5, 0: off): a pick other than the argmax whose draft
     // probability is at least that fraction of the argmax's proposes the argmax. near ties are where the draft's and
-    // the target's orders differ most, and the per-position log showed those swaps losing
+    // the target's orders differ most, and the per-position log showed those swaps losing (ticket 0058)
     static float coupled_tie() {
         static const float v = [] { const char * e = getenv("LLAMA_SPEC_COUPLED_TIE"); return e ? (float) atof(e) : 0.5f; }();
         return v;
@@ -2219,7 +2225,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
             id = cur_p->data[0].id;
             p  = cur_p->data[0].p;
         }
-        common_sampler_accept_draft(coupled, id); // the argmax fallback need not fit a triggered grammar
+        common_sampler_accept_draft(coupled, id); // (ticket 0071) the argmax fallback need not fit a triggered grammar
         return id;
     }
 
@@ -2284,7 +2290,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
         return true;
     }
 
-    // the next pipe_chain's first known token pairs with the target's row the
+    // [TAG_SPEC_REJECTION_PIPE] (ticket 0070) the next pipe_chain's first known token pairs with the target's row the
     // catch-up left for it (pending_h), as the serial loop's draft() pairs its first token
     bool pipe_rebase(llama_seq_id seq_id) override {
         if (!pipe_on || seq_id < 0 || seq_id >= (llama_seq_id) n_seq) {
@@ -2340,7 +2346,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
                 break;
             }
             float p_id = cur_p->data[0].p;
-            // sampled from q with the draft's own stream
+            // [TAG_SPEC_REJECTION_PIPE] sampled from q with the draft's own stream (ticket 0070)
             const llama_token id = coupled && q && q_rng ? common_speculative_rejection_pick(coupled, nullptr, q_rng, *q, cur_p, p_id) :
                 coupled ? coupled_pick(coupled, cur_p, p_id) : cur_p->data[0].id;
             if (coupled && coupled_debug()) {
@@ -2947,7 +2953,7 @@ int32_t common_speculative_n_max(const common_params_speculative * spec) {
     for (const auto type : spec->types) {
         switch (type) {
             case COMMON_SPECULATIVE_TYPE_DRAFT_MTP:
-                // the adaptive draft's depth sizes the verify's outputs
+                // [TAG_SPEC_REJECTION_ADAPT] (ticket 0073) the adaptive draft's depth sizes the verify's outputs
                 n_max = std::max(n_max, std::max(0, spec->draft.n_max));
                 n_max = std::max(n_max, common_speculative_rejection_nmax());
                 break;
@@ -3481,7 +3487,7 @@ void common_speculative_draft(common_speculative * spec) {
                         SPC_DBG("truncating draft to %d tokens\n", dp.n_max);
                         result.resize(dp.n_max);
                     }
-                    // each q row depends only on the tokens before it, so the kept rows stay valid
+                    // [TAG_SPEC_REJECTION] each q row depends only on the tokens before it, so the kept rows stay valid
                     if (dp.q && (int) dp.q->size() > dp.n_max) {
                         dp.q->resize(dp.n_max);
                     }
@@ -3558,7 +3564,8 @@ void common_speculative_accept(common_speculative * spec, llama_seq_id seq_id, u
 }
 
 bool common_speculative_rejection() {
-    static const bool v = [] { const char * e = getenv("LLAMA_SPEC_REJECTION"); return e != nullptr && atoi(e) != 0; }();
+    // ticket V5: on by default (the deployed launch's value); LLAMA_SPEC_REJECTION=0 restores the old default (off)
+    static const bool v = [] { const char * e = getenv("LLAMA_SPEC_REJECTION"); return e == nullptr || atoi(e) != 0; }();
     return v;
 }
 
@@ -3573,7 +3580,7 @@ int32_t common_speculative_rejection_nmax() {
         if (!common_speculative_rejection() || e == nullptr || atoi(e) == 0) {
             return 0;
         }
-        // a 5-token verify (4 drafts) emits garbage at 16K, on main too: at most 3 drafts
+        // a 5-token verify (4 drafts) emits garbage at 16K, on main too (ticket 0073): at most 3 drafts
         const char * en = getenv("LLAMA_SPEC_REJECTION_NMAX");
         return std::clamp(en ? atoi(en) : 3, 1, 3);
     }();

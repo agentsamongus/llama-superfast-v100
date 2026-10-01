@@ -1092,7 +1092,7 @@ void llm_graph_input_mem_hybrid::set_input(const llama_ubatch * ubatch) {
     mctx->get_attn()->set_input_v_idxs(inp_attn->self_v_idxs, ubatch);
 
     // the mask is left unallocated when the graph only stores K/V without attending
-    // (e.g. the MTP draft's catch-up,)
+    // (e.g. the MTP draft's catch-up, [TAG_MTP_CATCHUP_NOREAD])
     if (inp_attn->self_kq_mask->buffer) {
         mctx->get_attn()->set_input_kq_mask(inp_attn->self_kq_mask, ubatch, cparams.causal_attn);
     }
@@ -2842,10 +2842,23 @@ static std::unique_ptr<llm_graph_input_attn_kv> build_attn_inp_kv_impl(
     return inp;
 }
 
+// [TAG_KQ_MASK_DEVICE] ticket T3: a decode-sized mask of a cache with a device cell mirror is placed on that device and
+// built there by llama_kv_cache::set_input_kq_mask, instead of being written on the host and copied
+static void kq_mask_place(ggml_backend_sched_t sched, ggml_tensor * mask, const llama_kv_cache_context * mctx, const llama_cparams & cparams) {
+    if (mask == nullptr || mctx == nullptr) {
+        return;
+    }
+    if (ggml_backend_t backend = mctx->kq_mask_device_backend(sched, mask, cparams.causal_attn)) {
+        ggml_backend_sched_set_tensor_backend(sched, mask, backend);
+    }
+}
+
 llm_graph_input_attn_kv * llm_graph_context::build_attn_inp_kv() const {
     const auto * mctx_cur = static_cast<const llama_kv_cache_context *>(mctx);
 
     auto inp = build_attn_inp_kv_impl(ctx0, ubatch, hparams, cparams, mctx_cur);
+
+    kq_mask_place(sched, inp->self_kq_mask, mctx_cur, cparams);
 
     return (llm_graph_input_attn_kv *) res->add_input(std::move(inp));
 }
@@ -3603,6 +3616,8 @@ llm_graph_input_mem_hybrid * llm_graph_context::build_inp_mem_hybrid() const {
     auto inp_rs   = build_rs_inp_impl     (ctx0, ubatch, mctx_cur->get_recr());
     auto inp_attn = build_attn_inp_kv_impl(ctx0, ubatch, hparams, cparams, mctx_cur->get_attn());
 
+    kq_mask_place(sched, inp_attn->self_kq_mask, mctx_cur->get_attn(), cparams);
+
     auto inp = std::make_unique<llm_graph_input_mem_hybrid>(cparams, std::move(inp_attn), std::move(inp_rs), mctx_cur);
 
     return (llm_graph_input_mem_hybrid *) res->add_input(std::move(inp));
@@ -3996,7 +4011,7 @@ void llm_graph_context::build_sampling() const {
             ggml_tensor * logits_seq = ggml_view_1d(ctx0, logits_t, logits_t->ne[0], rows[i] * logits_t->nb[1]);
             ggml_format_name(logits_seq, "logits_seq_%d_%u", seq_id, i);
 
-            // logits over a subset of the vocabulary start with the subset's ids as the candidates, so
+            // [TAG_DRAFT_VOCAB] logits over a subset of the vocabulary start with the subset's ids as the candidates, so
             // the samplers return token ids
             struct llama_sampler_data data = {
                 /*.logits       =*/ logits_seq,

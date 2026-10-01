@@ -48,7 +48,7 @@ void llama_model_qwen35::load_arch_tensors(llama_model_loader & ml) {
         output = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), { n_embd, n_vocab }, TENSOR_DUPLICATED);
     }
 
-    // LLAMA_GDN_AB_MERGE=0 turns this off. A GDN layer's a and b projections read the same input, so
+    // Ticket 0087 (LLAMA_GDN_AB_MERGE=0 turns it off): a GDN layer's a and b projections read the same input, so
     // the graph runs them as one product (build_layer_attn_linear). Their two [n_embd, n_v_heads] weights are
     // loaded into the halves of one [n_embd, 2*n_v_heads] tensor, alpha's rows first, and ssm_alpha and ssm_beta
     // become views of it: nothing is copied and no memory is added. The merged tensor is created just before the
@@ -414,28 +414,45 @@ ggml_tensor * llama_model_qwen35::graph::build_layer_attn_linear(
     ggml_tensor * qkv_mixed = qkvz.first;
     ggml_tensor * z         = qkvz.second;
 
-    // With the a and b weights merged at load (see load_arch_tensors), up to 8 tokens run one product and
+    // Ticket S2 (LLAMA_QPN_GDN_GROUP=0 turns it off): z is read only by the gated norm after the recurrence, so the graph's depth-first
+    // order put its product far from qkv's, and the CUDA sibling planner could not run the two as one launch (an early z would write
+    // buffers the nodes between them still read). Expanding qkv, z and (below) ab here puts the three products of one input side by side.
+    static const bool gdn_adj = [] {
+        const char * e = getenv("LLAMA_QPN_GDN_GROUP");
+        return e == nullptr || atoi(e) != 0;
+    }();
+    if (gdn_adj) {
+        ggml_build_forward_expand(gf, qkv_mixed);
+        ggml_build_forward_expand(gf, z);
+    }
+
+    // Ticket 0087: with the a and b weights merged at load (see load_arch_tensors), up to 8 tokens run one product and
     // take alpha and beta as views of it. There the product is mul_mat_vec_q, where each row reduces alone whatever
     // the row count, so both halves are bit-identical to the two products; a larger batch keeps the two (MMQ's
-    // stream-k splits K by the tile count). The gated_delta_net launch folds both views' gates: the
+    // stream-k splits K by the tile count). The gated_delta_net launch folds both views' gates (ticket 0029): the
     // CONT keeps the unfolded sigmoid on a contiguous input, and the fold reads through it.
     const auto & layer_w = model.layers[il];
     ggml_tensor * ab_w = layer_w.ssm_alpha->view_src;
     const bool ab_merged = ab_w != nullptr && ab_w == layer_w.ssm_beta->view_src && layer_w.ssm_alpha->view_offs == 0 &&
                            layer_w.ssm_beta->view_offs == ggml_nbytes(layer_w.ssm_alpha) && ab_w->ne[1] == 2*num_v_heads &&
                            layer_w.ssm_alpha_s == nullptr && layer_w.ssm_beta_s == nullptr && loras->empty() &&
-                           ubatch.n_tokens <= 8;
+                           (ubatch.n_tokens <= 8 || (ab_w->flags & GGML_TENSOR_FLAG_BACKEND_LAYOUT) != 0);
 
     ggml_tensor * beta;
     ggml_tensor * alpha;
     if (ab_merged) {
         ggml_tensor * ab = ggml_mul_mat(ctx0, ab_w, cur);
         cb(ab, "ab", il);
+        if (gdn_adj) {
+            ggml_build_forward_expand(gf, ab);
+        }
         const size_t es = ggml_element_size(ab);
         beta = ggml_view_4d(ctx0, ab, 1, num_v_heads, n_seq_tokens, n_seqs, es, ab->nb[1], ab->nb[1]*n_seq_tokens, num_v_heads*es);
         beta = ggml_cont(ctx0, beta);
         alpha = ggml_view_3d(ctx0, ab, num_v_heads, n_seq_tokens, n_seqs, ab->nb[1], ab->nb[1]*n_seq_tokens, 0);
     } else {
+        // ticket S2: a merged a/b weight the backend repacked (GGML_TENSOR_FLAG_BACKEND_LAYOUT) is read only through ab
+        GGML_ASSERT(ab_w == nullptr || !(ab_w->flags & GGML_TENSOR_FLAG_BACKEND_LAYOUT));
         beta = build_lora_mm(layer_w.ssm_beta, cur, layer_w.ssm_beta_s);
         beta = ggml_reshape_4d(ctx0, beta, 1, num_v_heads, n_seq_tokens, n_seqs);
     }
@@ -721,7 +738,7 @@ llama_model_qwen35::graph_mtp::graph_mtp(const llama_model & model, const llm_gr
     ggml_tensor * head_s = layer.nextn.shared_head_head ? layer.nextn.shared_head_head_s : model.output_s;
     GGML_ASSERT(head_w && "QWEN35 MTP: missing LM head (nextn.shared_head_head or model.output)");
     if (model.head_subset_w && head_w == model.output && head_s == nullptr) {
-        // the draft's logits over the subset rows only; build_sampling maps rows back to token ids
+        // [TAG_DRAFT_VOCAB] the draft's logits over the subset rows only; build_sampling maps rows back to token ids (ticket 0077)
         cur = ggml_mul_mat(ctx0, model.head_subset_w, cur);
         res->t_logits_ids = model.head_subset_ids;
     } else {

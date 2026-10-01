@@ -5,6 +5,10 @@
 #include "fattn-vec.cuh"
 #include "fattn.cuh"
 
+// ticket S1 step 3 (fattn-verify-stream.cu)
+bool ggml_cuda_fattn_verify_stream_applies(const ggml_tensor * dst);
+void ggml_cuda_flash_attn_ext_verify_stream(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
+
 #if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
 __launch_bounds__(256, 1)
 static __global__ void flash_attn_mask_to_sparse_indices(
@@ -151,7 +155,8 @@ static void ggml_cuda_flash_attn_ext_mma_f16_switch_ncols1(ggml_backend_cuda_con
     }
 
     if constexpr (ncols2 <= 16) {
-        if (Q->ne[1] <= 16/ncols2) {
+        // ticket 0120: the Volta mma kernel has no device code below 32 columns (NO_DEVICE_CODE traps), so it never takes this case
+        if (Q->ne[1] <= 16/ncols2 && cc != GGML_CUDA_CC_VOLTA) {
             ggml_cuda_flash_attn_ext_mma_f16_case<DKQ, DV, 16/ncols2, ncols2>(ctx, dst);
             return;
         }
@@ -198,6 +203,20 @@ static void ggml_cuda_flash_attn_ext_mma_f16_switch_ncols2(ggml_backend_cuda_con
 
     // On Volta the GQA optimizations aren't as impactful vs. minimizing wasted compute:
     if (cc == GGML_CUDA_CC_VOLTA) {
+        // ticket 0126: the 8-row verify on a BF16 cache (the call E23 routes to this kernel) puts the whole GQA group in one tile, so each KV head
+        // is streamed once instead of gqa_ratio/ncols2 times: ncols2 = 8 with a group of up to 8 (the padded columns are guarded, fattn-mma-f16.cuh
+        // Q load and store). LLAMA_FATTN_VERIFY_GQA8=0 restores the power-of-two divisor.
+        static const bool verify_gqa8 = [] { const char * e = getenv("LLAMA_FATTN_VERIFY_GQA8"); return e ? atoi(e) != 0 : true; }();
+        static const int verify_mma_min = [] { const char * e = getenv("LLAMA_FATTN_VERIFY_MMA_MIN"); return e ? atoi(e) : 4096; }();
+        if constexpr (DKQ == 256 && DV == 256) {
+            // ticket S1: an F16 cache (the deployed launch) takes the same route
+            if (verify_gqa8 && verify_mma_min >= 0 && use_gqa_opt && gqa_ratio <= 8 && gqa_ratio > 2 && Q->ne[1] <= 8 && K->ne[1] >= verify_mma_min &&
+                    (K->type == GGML_TYPE_BF16 || K->type == GGML_TYPE_F16) && K->type == V->type) {
+                ggml_cuda_flash_attn_ext_mma_f16_switch_ncols1<DKQ, DV, 8>(ctx, dst);
+                return;
+            }
+        }
+
         if (use_gqa_opt && gqa_ratio % 8 == 0) {
             ggml_cuda_flash_attn_ext_mma_f16_switch_ncols1<DKQ, DV, 8>(ctx, dst);
             return;
@@ -678,10 +697,27 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
     }
 
     if (volta_mma_available(cc) && Q->ne[0] != 40 && Q->ne[0] != 72) {
+        // ticket T1: the one-row call (the drafter's seven draft steps per round) on an f16 or bf16 cache of at least
+        // LLAMA_FATTN_ONE_ROW_MMA keys (default 4096, -1: never) goes to the mma kernel, which reads each KV head once per group
+        // (the vec kernel reads it once per query head). The target's own one-row calls take the same route.
+        static const int one_row_mma_min = [] { const char * e = getenv("LLAMA_FATTN_ONE_ROW_MMA"); return e ? atoi(e) : 4096; }();
+        if (one_row_mma_min >= 0 && Q->ne[1] == 1 && Q->ne[0] == 256 && gqa_ratio > 2 && gqa_ratio <= 8 && K->ne[1] >= one_row_mma_min &&
+            (K->type == GGML_TYPE_BF16 || K->type == GGML_TYPE_F16) && K->type == V->type && gqa_opt_applies) {
+            return BEST_FATTN_KERNEL_MMA_F16;
+        }
         if (can_use_vector_kernel && Q->ne[1] * gqa_ratio_eff <= 2) {
             return BEST_FATTN_KERNEL_VEC;
         }
-        if (Q->ne[1] * gqa_ratio_eff <= 16) {
+        // ticket 0120 (E23): the 8-row verify on a BF16 cache of at least LLAMA_FATTN_VERIFY_MMA_MIN tokens (default 4096, -1: never)
+        // goes to the mma kernel, which reads the cache directly: the tile kernel is limited by the FMA pipe and 2.5 to 3.5 times
+        // its byte floor at depth, the mma kernel is not (the mma kernel needs 32 columns on Volta: 16 rows, half of them padding)
+        static const int verify_mma_min = [] { const char * e = getenv("LLAMA_FATTN_VERIFY_MMA_MIN"); return e ? atoi(e) : 4096; }();
+        // ticket T7: 2 to 8 rows take the same route, not only 8 (LLAMA_FATTN_VERIFY_ANY_WIDTH=0 restores the == 16 test); 1 row is T1's case above
+        static const bool verify_any_width = [] { const char * e = getenv("LLAMA_FATTN_VERIFY_ANY_WIDTH"); return e ? atoi(e) != 0 : true; }();
+        const bool verify_rows_ok = verify_any_width ? (Q->ne[1] >= 2 && Q->ne[1] * gqa_ratio_eff <= 16) : (Q->ne[1] * gqa_ratio_eff == 16);
+        const bool verify_to_mma = verify_mma_min >= 0 && verify_rows_ok && Q->ne[1] <= 8 && K->ne[1] >= verify_mma_min &&
+            (K->type == GGML_TYPE_BF16 || K->type == GGML_TYPE_F16) && K->type == V->type && Q->ne[0] == 256 && gqa_opt_applies; // S1: F16 too
+        if (Q->ne[1] * gqa_ratio_eff <= 16 && !verify_to_mma) {
             return BEST_FATTN_KERNEL_TILE; // On Volta tensor cores are only faster for sufficiently large matrices.
         }
         return BEST_FATTN_KERNEL_MMA_F16;
@@ -744,8 +780,8 @@ size_t ggml_cuda_flash_attn_ext_get_alloc_size(int device, const ggml_tensor * d
             need_f16_V = need_f16_K;
             break;
         case BEST_FATTN_KERNEL_MMA_F16:
-            need_f16_K = true;
-            need_f16_V = true;
+            need_f16_K = !ggml_cuda_fattn_mma_reads_bf16(dst); // ticket 0120: the Volta mma kernel may read a BF16 cache directly
+            need_f16_V = need_f16_K;
             break;
         case BEST_FATTN_KERNEL_VEC: {
             const bool f16_fallback = ggml_cuda_get_fattn_vec_case(Q->ne[0], K->type, V->type) == nullptr;
@@ -774,6 +810,10 @@ void ggml_cuda_flash_attn_ext(ggml_backend_cuda_context & ctx, ggml_tensor * dst
             ggml_cuda_flash_attn_ext_vec(ctx, dst);
             break;
         case BEST_FATTN_KERNEL_MMA_F16:
+            if (ggml_cuda_fattn_verify_stream_applies(dst)) {
+                ggml_cuda_flash_attn_ext_verify_stream(ctx, dst);
+                break;
+            }
             ggml_cuda_flash_attn_ext_mma_f16(ctx, dst);
             break;
     }

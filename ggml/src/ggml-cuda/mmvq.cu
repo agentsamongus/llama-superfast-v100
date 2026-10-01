@@ -108,7 +108,7 @@ static bool ggml_cuda_mmvq_iq_decode() {
     return iq_decode;
 }
 
-// LLAMA_MMVQ_DENSE3=0 keeps main's launch for three-column dense products.
+// LLAMA_MMVQ_DENSE3=0 keeps main's launch for three-column dense products (ticket 0028).
 // At three columns the kernel holds six partial sums per thread and uses 80 to 98 registers, so a
 // Volta SM keeps only 5 or 6 of its 4-warp blocks resident, against 12 at one column. Capping the
 // registers so 7 blocks fit (72 registers, no spills) gives the SM more loads in flight. The
@@ -123,7 +123,7 @@ static bool ggml_cuda_mmvq_dense3() {
 
 static constexpr int MMVQ_DENSE3_MIN_BLOCKS = 7;
 
-// LLAMA_MMVQ_DENSE4=0 keeps main's launch for four-column dense products.
+// LLAMA_MMVQ_DENSE4=0 keeps main's launch for four-column dense products (ticket 0077).
 // At four columns the kernel holds eight partial sums per thread at 94 to 147 registers, so a Volta SM keeps
 // only 3 to 5 of its 4-warp blocks resident. 4 rows per block (16 partial sums, capped at 128 registers so
 // 4 blocks fit, no spills) put twice the weight loads in flight per loop trip. Every row keeps its thread
@@ -145,7 +145,7 @@ static constexpr bool mmvq_dense4_type(ggml_type type) {
            type == GGML_TYPE_IQ4_XS;
 }
 
-// LLAMA_MMVQ_MOE_DOWN=0 keeps main's 2 rows per block for the grouped expert down projection.
+// LLAMA_MMVQ_MOE_DOWN=0 keeps main's 2 rows per block for the grouped expert down projection (ticket 0028).
 // With K = 640 each warp finishes a row pair in one loop trip on 20 of its 32 lanes, so the kernel is
 // bound by the latency of its many short blocks, not by memory (weights in L2 save only 3%). 8 rows per
 // block give each warp 4 times the loads in flight per trip. Every row's lane assignment and reduction
@@ -160,7 +160,7 @@ static bool ggml_cuda_mmvq_moe_down() {
 
 static constexpr int MMVQ_MOE_DOWN_ROWS = 8;
 
-// LLAMA_MMVQ_DENSE1=0 keeps main's one row per block for one-column dense products.
+// LLAMA_MMVQ_DENSE1=0 keeps main's one row per block for one-column dense products (ticket 0028).
 // At one column each 4-warp block reads a single row, so a thread has one weight load in flight per
 // loop trip; the draft's 248,320-row output head reaches only about 560 GB/s that way. 4 rows per
 // block (as the multi-column kernels already do with 2) put four independent loads in flight per trip.
@@ -176,7 +176,7 @@ static bool ggml_cuda_mmvq_dense1() {
 static constexpr int MMVQ_DENSE1_ROWS = 4;
 
 // measured on a V100 with the checkpoint's tensors (the output head is Q5_K); Q3_K is the 27B MTP draft's
-// output head, 28% faster
+// output head, 28% faster (ticket 0077)
 static constexpr bool mmvq_dense1_type(ggml_type type) {
     return type == GGML_TYPE_Q4_K || type == GGML_TYPE_Q5_K || type == GGML_TYPE_Q6_K || type == GGML_TYPE_IQ4_XS ||
            type == GGML_TYPE_Q3_K;
@@ -709,7 +709,7 @@ static constexpr __host__ __device__ int calc_rows_per_block(int ncols_dst, int 
     return 1;
 }
 
-// c_min_blocks: blocks per SM the register allocation must allow; c_rows: rows per block, 0 for the table's
+// c_min_blocks: blocks per SM the register allocation must allow; c_rows: rows per block, 0 for the table's (ticket 0028)
 template <ggml_type type, int ncols_dst, bool has_fusion, bool small_k = false, bool halve_iters = false, bool iq_fast = false, int c_min_blocks = 1, int c_rows = 0>
 __launch_bounds__(calc_nwarps(type, ncols_dst, get_device_table_id(), small_k, halve_iters)*ggml_cuda_get_physical_warp_size(), c_min_blocks)
 static __global__ void mul_mat_vec_q(
@@ -1680,8 +1680,8 @@ void ggml_cuda_mul_mat_vec_q(
 
     GGML_ASSERT(!ids || ne12 <= MMVQ_MAX_BATCH_SIZE);
 
-    // the dense multi-token K-quant products on Volta tensor cores; they never touch the shared q8_1 slots
-    GGML_ASSERT(!ggml_cuda_qpn_is_repacked(src0)); // a repacked weight holds no GGUF layout
+    // ticket 0053: the dense multi-token K-quant products on Volta tensor cores; they never touch the shared q8_1 slots
+    GGML_ASSERT(!ggml_cuda_qpn_is_repacked(src0)); // ticket 0078: a repacked weight holds no GGUF layout
     if (!ids && !fusion && ggml_cuda_mmvq_tc_use(src0, src1, dst, ctx.device)) {
         ggml_cuda_mul_mat_vec_q_tc(ctx, src0, src1, dst);
         return;
@@ -1746,7 +1746,7 @@ void ggml_cuda_mul_mat_vec_q(
 
     const int64_t ne10_padded = GGML_PAD(ne10, MATRIX_ROW_PADDING);
     const size_t src1_q8_1_size = ne13*ne12 * ne11*ne10_padded * sizeof(block_q8_1)/QK8_1;
-    bool src1_q8_1_ready = false; // quantized already by a sibling reading the same src1
+    bool src1_q8_1_ready = false; // ticket 0042 (F5): quantized already by a sibling reading the same src1
     char * src1_q8_1_shared = ggml_cuda_q8_share_buffer(src0, src1, src1_q8_1_size, stream, &src1_q8_1_ready);
     ggml_cuda_pool_alloc<char> src1_q8_1_pool(ctx.pool());
     char * src1_q8_1 = src1_q8_1_shared ? src1_q8_1_shared : src1_q8_1_pool.alloc(src1_q8_1_size);

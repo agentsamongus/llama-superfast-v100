@@ -1517,7 +1517,7 @@ extern "C" {
                const llama_token * trigger_tokens,
                             size_t num_trigger_tokens);
 
-    /// true if smpl is a grammar sampler (llama_sampler_init_grammar*) whose lazy grammar has not
+    /// [TAG_BACKEND_TOPK] true if smpl is a grammar sampler (llama_sampler_init_grammar*) whose lazy grammar has not
     /// been triggered yet: until then its apply returns without changing any candidate
     LLAMA_API bool llama_sampler_grammar_awaiting_trigger(const struct llama_sampler * smpl);
 

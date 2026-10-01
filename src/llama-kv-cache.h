@@ -246,6 +246,11 @@ public:
     void set_input_kq_mask   (ggml_tensor * dst, const llama_ubatch * ubatch, bool causal_attn) const;
     void set_input_pos_bucket(ggml_tensor * dst, const llama_ubatch * ubatch) const;
 
+    // [TAG_KQ_MASK_DEVICE] ticket T3: the backend of sched that holds the device mirror of the cells, when a KQ mask of
+    // this shape can be built on the device by set_input_kq_mask (the mask tensor is then placed on that backend),
+    // or nullptr (the mask stays a host input). LLAMA_KQ_MASK_DEVICE=0 restores the host mask everywhere
+    ggml_backend_t kq_mask_device_backend(ggml_backend_sched_t sched, const ggml_tensor * mask, bool causal_attn) const;
+
     // inkling: fill dst I32 [n_kv, n_tokens] with flat rel-bias gather indices,
     // idx(i, j) = i*(extent + 1) + rel; empty/out-of-band cells map to the zero-bias column `extent`
     void set_input_pos_rel_flat(ggml_tensor * dst, const llama_ubatch * ubatch, uint32_t extent) const;
@@ -325,6 +330,18 @@ private:
     std::shared_ptr<llama_kv_cells_vec> v_cells_impl;
 
     llama_kv_cells_vec & v_cells;
+
+    // [TAG_KQ_MASK_DEVICE] the device mirror of the cells for the KQ mask, I32 [3*size]: per cell the position if the
+    // cell holds sequence 0 (-1 otherwise), then ext.y, then ext.x; kept true from the cells' change journal
+    // (llama_kv_cells::cjrnl_*) by every set_input_kq_mask that builds its mask on the device
+    ggml_tensor * kqm_cells = nullptr;
+    void        * kqm_fn    = nullptr; // ggml_backend_cuda_kq_mask
+
+    mutable ggml_backend_t kqm_backend = nullptr;
+    mutable uint64_t       kqm_epoch   = 0;
+    mutable uint64_t       kqm_cursor  = 0;
+
+    bool set_input_kq_mask_device(ggml_tensor * dst, const llama_ubatch * ubatch, bool causal_attn) const;
 
     // maps from a sequence id to a stream id
     std::vector<uint32_t> seq_to_stream;
@@ -460,6 +477,7 @@ public:
 
     void set_input_k_shift   (ggml_tensor * dst) const;
     void set_input_kq_mask   (ggml_tensor * dst, const llama_ubatch * ubatch, bool causal_attn) const;
+    ggml_backend_t kq_mask_device_backend(ggml_backend_sched_t sched, const ggml_tensor * mask, bool causal_attn) const; // [TAG_KQ_MASK_DEVICE]
     void set_input_pos_bucket(ggml_tensor * dst, const llama_ubatch * ubatch) const;
     void set_input_pos_rel_flat(ggml_tensor * dst, const llama_ubatch * ubatch, uint32_t extent) const; // inkling
 
