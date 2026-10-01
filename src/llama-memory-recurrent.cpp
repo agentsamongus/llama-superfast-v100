@@ -38,8 +38,11 @@ llama_memory_recurrent::llama_memory_recurrent(
 
     // [TAG_SPEC_PIPELINE] rows for one backup copy of the snapshots, only when pipelined speculation is enabled
     {
+        // default on (ticket 0093), except on the qwen35 line (the 27B, ticket W1): its deployed launch (n-max 7) never pipelines, so it keeps
+        // the rows off unless LLAMA_SPEC_PIPELINE=1; the server's default below is the same per-architecture one
         const char * e = getenv("LLAMA_SPEC_PIPELINE");
-        n_rs_bak = (n_rs_seq > 0 && e != nullptr && atoi(e) != 0) ? n_rs_seq + 1 : 0;
+        const bool pipe_default = model.arch != LLM_ARCH_QWEN35;
+        n_rs_bak = (n_rs_seq > 0 && (e == nullptr ? pipe_default : atoi(e) != 0)) ? n_rs_seq + 1 : 0;
     }
     rs_bak.assign(n_seq_max, {});
 

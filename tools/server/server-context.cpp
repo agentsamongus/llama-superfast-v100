@@ -1444,8 +1444,11 @@ private:
 
         // [TAG_SPEC_PIPELINE]
         {
+            // default on (ticket 0093), except on the qwen35 line (the 27B, ticket W1), as in llama-memory-recurrent.cpp
             const char * e = getenv("LLAMA_SPEC_PIPELINE");
-            if (e != nullptr && atoi(e) != 0) {
+            char arch_tgt[64] = {};
+            llama_model_meta_val_str(model_tgt, "general.architecture", arch_tgt, sizeof(arch_tgt));
+            if (e == nullptr ? strcmp(arch_tgt, "qwen35") != 0 : atoi(e) != 0) {
                 pipe_enabled = spec && ctx_dft && llama_n_rs_seq(ctx_tgt) >= 2 &&
                     common_speculative_n_max(spec.get()) == PIPE_N_CHUNK - 1 &&
                     common_speculative_pipe_enable(spec.get());
@@ -3033,7 +3036,7 @@ private:
 #endif
 
     //
-    // [TAG_SPEC_PIPELINE] pipelined speculative decoding (ticket 0055), LLAMA_SPEC_PIPELINE=1, default off
+    // [TAG_SPEC_PIPELINE] pipelined speculative decoding (ticket 0055), LLAMA_SPEC_PIPELINE, default on (0: off; ticket 0093)
     //
     // one generating slot only, with the MTP draft. a verify chunk C (the sampled token and its two drafts) is in
     // flight together with the next chunk N: a guess of C's bonus token and two more drafts from the extended draft
@@ -3067,7 +3070,7 @@ private:
     };
 
     // [TAG_SPEC_REJECTION_PIPE] rejection sampling together with the pipeline (ticket 0070), when both
-    // LLAMA_SPEC_REJECTION and LLAMA_SPEC_PIPELINE are set (both default off), for a request whose sampler can take the
+    // LLAMA_SPEC_REJECTION and LLAMA_SPEC_PIPELINE are on (both default on since ticket 0093), for a request whose sampler can take the
     // rejection step. every draft token of the pipelined loop is sampled from the draft's q with the slot's own draft
     // generator (spec_rng_dft), including the guess g of a chunk C's bonus token, which is sampled whenever the
     // pipeline guesses at all. C's verify is then rejection sampling with a draft of 3: its two drafts and g against

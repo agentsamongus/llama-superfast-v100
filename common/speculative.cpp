@@ -960,12 +960,30 @@ struct common_speculative_impl_draft_eagle3 : public common_speculative_impl {
 // 4 rows per block only then (mmvq.cu, LLAMA_MMVQ_DENSE1) and otherwise falls back to a slower kernel. A draft token
 // changes only where the full head's argmax lies outside the subset; the target verifies every draft, so the output
 // does not depend on it where the verify is batch-independent
-static bool common_speculative_draft_vocab_ids(const llama_model * model, const int32_t top_k, std::vector<llama_token> & ids_out, std::string & what) {
+static bool common_speculative_draft_vocab_ids(const llama_model * model, const int32_t top_k, std::vector<llama_token> & ids_out, std::string & what, const bool arch_default = false) {
     const char * ek = getenv("LLAMA_SPEC_DRAFT_VOCAB");
     const char * ef = getenv("LLAMA_SPEC_DRAFT_VOCAB_FILE");
     // ticket V5: K unset takes 98304 (the deployed launch's value; -1 still takes every id of the file). The file path stays
     // a per-launch choice (a model file): with neither variable set the subset stays off
     int32_t k = 98304;
+    // ticket W1 (tickets 0093 and V5): with arch_default (the MTP draft; not DFlash2) and no LLAMA_SPEC_DRAFT_VOCAB_FILE, the ranking
+    // file shipped in models/ for the draft's architecture: a qwen4exp draft (Flash-Next) takes its file with K 65536 (0093's
+    // measured decision), a qwen35 draft (the 27B) its file with K 98304 (V5's). Any other architecture runs with no subset
+    // and no warning unless LLAMA_SPEC_DRAFT_VOCAB was set
+    std::string ef_default;
+#ifdef LLAMA_SPEC_DRAFT_VOCAB_DIR
+    if (arch_default && ef == nullptr) {
+        char arch[64] = {};
+        llama_model_meta_val_str(model, "general.architecture", arch, sizeof(arch));
+        if (strcmp(arch, "qwen4exp") == 0) {
+            k = 65536;
+            ef_default = std::string(LLAMA_SPEC_DRAFT_VOCAB_DIR) + "/draft-vocab-qwen3.8-flash-next.txt";
+        } else if (strcmp(arch, "qwen35") == 0) {
+            ef_default = std::string(LLAMA_SPEC_DRAFT_VOCAB_DIR) + "/draft-vocab-qwen3.8-27b.txt";
+        }
+        ef = ef_default.empty() ? nullptr : ef_default.c_str();
+    }
+#endif
     if (ek != nullptr && *ek != '\0') {
         char * end = nullptr;
         errno = 0;
@@ -1742,7 +1760,7 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
     static void draft_vocab_init(const llama_model * model, const int32_t top_k) {
         std::vector<llama_token> ids;
         std::string what;
-        if (!common_speculative_draft_vocab_ids(model, top_k, ids, what)) {
+        if (!common_speculative_draft_vocab_ids(model, top_k, ids, what, /*arch_default*/ true)) {
             return;
         }
         if (!llama_model_set_head_subset(model, ids.data(), (int32_t) ids.size())) {
@@ -3564,7 +3582,7 @@ void common_speculative_accept(common_speculative * spec, llama_seq_id seq_id, u
 }
 
 bool common_speculative_rejection() {
-    // ticket V5: on by default (the deployed launch's value); LLAMA_SPEC_REJECTION=0 restores the old default (off)
+    // default on: tickets 0093 (Flash-Next) and V5 (the 27B), both deployed launches' value; LLAMA_SPEC_REJECTION=0 turns it off
     static const bool v = [] { const char * e = getenv("LLAMA_SPEC_REJECTION"); return e == nullptr || atoi(e) != 0; }();
     return v;
 }

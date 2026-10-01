@@ -1,41 +1,44 @@
-# ⚠️ You are on the **27B branch**, not upstream llama.cpp
+# llama.cpp for the Tesla V100
 
-This repository is **`exp-27b`**, a fork of llama.cpp tuned to run **Qwen3.8-27B on a single Tesla V100 32 GB** with speculative decoding — Unsloth's MTP head or z-lab's DFlash2 as the draft model. **Everything below this notice is upstream llama.cpp's own README and does not describe this fork.** See **[`README-27B.md`](README-27B.md)** for the build, the models, the exact launch lines and the recommended settings.
+This is a fork of llama.cpp with CUDA kernel and server changes for the Tesla V100 (Volta, `sm_70`). It runs **Qwen3.8-27B on a single V100 32 GB** with speculative decoding, at the speeds below. The same engine also serves Qwen3.8-Flash-Next across two V100s; that work is still in progress and is not documented here yet.
 
-All figures are from one V100 32 GB, single stream, at temperature 1.0 with top-p 0.95 and top-k 20.
+Everything below the horizontal rule is upstream llama.cpp's own README. The build, the model files, the launch lines and the detailed measurements for the 27B are in [`README-27B.md`](README-27B.md).
 
-## Headline numbers
+## What it runs
 
-| | this branch | compared with |
-|---|---|---|
-| Coding-agent suite, 4 tasks × empty and preloaded, every run at full marks | **126.6 tok/s** empty, **111.9** preloaded | +2.3% / +1.5% over this branch's previous release |
-| HumanEval 0–31, mean steady decode | **107.70 tok/s**, **32 of 32 solved** | +4.2% over the previous release, which lost one run to its token cap |
-| Cold prefill, fixed prompt, 16K and 64K | **+1.4% to +2.6%** at 16K, **+2.1% to +2.6%** at 64K | over the previous release |
+- Qwen3.8-27B in Unsloth's `UD-Q4_K_XL` quantization (16.4 GiB), with Unsloth's multi-token-prediction head (`Q4_0`, 1.3 GiB) as the draft model. z-lab's DFlash2 draft model is supported as an alternative.
+- One V100 32 GB. A 131,072-token context with the KV cache in f16 fits in 26 to 29 GB.
+- One request at a time, thinking on, temperature 1.0, top-p 0.95, top-k 20. These are the settings behind every figure here, and the ones we use day to day.
 
-## Against NInfer, on identical tasks and identical aggregation
+## How fast
 
-Total output tokens over total decode time, same four coding-agent tasks, same sampling, same aggregation rule on both sides. **Both engines solved every run**.
+All figures are from one V100 32 GB PCIe, single stream, at the settings above, with the card at 1,345 to 1,380 MHz while decoding and about 1,290 MHz during long prompt processing, where the power cap bites.
 
-| | decode tok/s | acceptance | tokens per round | prefill tok/s |
-|---|---|---|---|---|
-| **this branch** (MTP, draft window 7) | **115.6** | 0.599–0.668 | 5.19–5.68 | 482–670 |
-| NInfer (its published settings, draft window 3) | **57.8** | 0.646–0.714 | 3.21–3.57 | **557–734** |
+| | Result |
+|---|---|
+| Coding-agent tasks, starting from an empty context (runs end at 22K to 32K tokens) | 126.6 tok/s mean decode, 8 of 8 runs passed their tests |
+| The same tasks with the repository loaded into context first (about 72K tokens before the task starts) | 111.9 tok/s mean decode |
+| HumanEval, problems 0 to 31 | 107.7 tok/s mean steady decode, 32 of 32 passed, 3.7 tokens accepted per round |
+| Prompt processing, cold, fixed prompt | about 930 tok/s for a 16K prompt, about 740 tok/s for a 64K prompt |
+| Draft acceptance on the coding-agent tasks | 0.61 to 0.68 per drafted token, with a 7-token draft window |
 
-NInfer's draft acceptance is **higher** and its prefill is **faster**; its tokens per round are lower because it drafts 3 tokens where this branch drafts 7, so those two columns are not like-for-like. **NInfer's published 262,144-token context does not fit a 32 GB V100**: its own startup reservation needs 11.7 GB beyond the weights against 1 GB of automatic headroom and 12.6 GB free, so that run used 131,072. This branch serves 131,072 on the same card in 26 to 29 GB.
+The coding-agent tasks are four ordinary feature tasks on a small Python web application, run by a coding agent that edits files and runs the tests, each once from an empty context and once with the repository preloaded. Every run is one sample at temperature 1.0, so turn counts and paths differ from run to run; the figures are typical rather than best-case.
 
-## Settings that work well in general use
+One figure that is not from a benchmark: on the author's own day-to-day coding traffic over about 21,600 rounds, acceptance was 0.46 per drafted token and 2.6 tokens per round, lower than on the tasks above. We do not yet know why, and it is being looked at.
 
-These are the settings behind the numbers above, and they are what we recommend for general purpose work — coding agents, Python and prose alike:
+A comparison with NInfer on the same tasks is in `README-27B.md`. In short, this fork decodes about twice as fast on those tasks, and NInfer's prompt processing is faster.
 
-```
-scripts/serve-27b.sh mtp
-```
+## What was changed
 
-That script runs the server with temperature 1.0, top-p 0.95 and top-k 20, thinking on at the chat template's default, a 131,072-token context with the KV cache in f16, prompt micro-batches of 2,048 tokens, one request at a time, and a 7-token draft window. Rejection sampling and a 98,304-id draft vocabulary are on by default in the engine. Nothing else needs tuning; if you want the DFlash2 draft instead of MTP, `scripts/serve-27b.sh dflash` takes the same settings.
+About twenty changes to the CUDA kernels and the server, made over several rounds of work on this one card. Each was kept only if it was faster on the same test and produced the same text, or, where a numeric path changed, stayed within a KL-divergence bound against the previous build. Changes that did not pay for themselves were measured and left out. The list, with what each was worth, is in `README-27B.md`.
 
-## What we tuned, in one paragraph
+## Limits
 
-Across four rounds of kernel work this branch gained a verification step that reads each cached KV head once instead of twice; an 8-row attention kernel widened to serve any width from 2 to 8 rows; a streaming attention kernel at four columns per warp with its key loads moved off the QK warps; the attention mask built on the device rather than copied every step; a chunked gated-delta prefill on tensor cores, which took cold prefill from 836 to 911 tok/s at 16K; a four-column gated-delta decode recurrence; a fused decode kernel worth 0.56 to 0.62 ms per round; a checkpoint fix that stopped the draft model's KV cache being copied on every request, saving 241 to 511 ms per request; and the deployment's environment settings moved out of the launch line and into the engine. **Every change was gated against the previous build — bitwise on the output text, or by KL divergence where a numeric path changed — and anything that did not pay for itself was left out rather than merged.**
+- Prompt processing is the slow side.
+- The CUDA kernels were written and tested for the V100 only. Other GPUs are untested and are not expected to work.
+- One request at a time. Concurrent requests are untested.
+- The draft vocabulary is tuned for English and code; acceptance on Chinese is low.
+- Context shift is off, so a full context cuts a reply short.
 
 ---
 

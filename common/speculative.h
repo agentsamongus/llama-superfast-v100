@@ -93,7 +93,7 @@ struct common_speculative_draft_params {
 // will take, instead of its argmax
 bool common_speculative_coupled();
 
-// [TAG_SPEC_REJECTION] rejection sampling (ticket 0069), LLAMA_SPEC_REJECTION=1, default on since ticket V5 (=0 turns it off): the MTP draft samples its
+// [TAG_SPEC_REJECTION] rejection sampling (ticket 0069), LLAMA_SPEC_REJECTION, default on (0: off; tickets 0093 and V5): the MTP draft samples its
 // tokens from its own distribution and the verify keeps the target's output distribution with the rejection step
 // (common_sampler_sample_and_accept_n_rejection). LLAMA_SPEC_REJECTION_TEMP: the draft's temperature (default: the
 // target's). changes seeded outputs, not their distribution

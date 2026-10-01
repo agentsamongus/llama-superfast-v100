@@ -133,7 +133,7 @@ void common_sampler_coupled_skip(struct common_sampler * gsmpl, llama_token tok)
 // forcing returns its forced token, with *forced set
 llama_token common_sampler_coupled_pick(struct common_sampler * gsmpl, const llama_token_data_array * cand, bool * forced);
 
-// [TAG_SPEC_REJECTION] rejection sampling for the MTP draft (ticket 0069), LLAMA_SPEC_REJECTION=1, default on since ticket V5 (=0 turns it off). the
+// [TAG_SPEC_REJECTION] rejection sampling for the MTP draft (ticket 0069), LLAMA_SPEC_REJECTION, default on (0: off; tickets 0093 and V5). the
 // draft samples each token x from q, its candidates through a copy of the target's sampler, and the verify accepts x
 // with probability min(1, p(x)/q(x)), p being the target's distribution after its chain; on a rejection it samples
 // the normalized residual max(0, p - q) and stops, and after every draft is accepted it samples the bonus token from
