@@ -1145,7 +1145,7 @@ void launch_fattn(
             if (amd_wmma_available(cc) && DKQ == 64) {
                 return true; // TODO better configuration
             }
-            // [TAG_FATTN_VOLTA_STREAMK] ticket U6: on Volta a 2,048-row prefill tile grid (768 tiles of the 27B at 144
+            // on Volta a 2,048-row prefill tile grid (768 tiles of the 27B at 144
             // resident blocks) is 5.33 waves, 89% efficient, so it ran without stream-k while 512 rows (67%) used it;
             // stream-k below 100% efficiency on Volta. LLAMA_FATTN_VOLTA_STREAMK=0 restores the 75% threshold.
             static const bool volta_streamk = [] { const char * e = getenv("LLAMA_FATTN_VOLTA_STREAMK"); return e == nullptr || atoi(e) != 0; }();

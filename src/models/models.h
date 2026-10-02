@@ -2573,6 +2573,10 @@ struct llama_model_qwen4exp : public llama_model_base {
         // so the layers sharing a ratio share one input set
         std::map<uint32_t, llm_graph_input_qsa *> qsa_inps;
 
+        // the sparse prompt attention's [1, n_kv, n_tps] view of the KQ mask, built once per graph and shared by the
+        // layers: the scheduler copies every distinct view of the (cache-sized) mask to each card as its own split input
+        std::map<const ggml_tensor *, ggml_tensor *> qsa_mask_rows;
+
         // QSA: token indices this layer's queries may attend to, or nullptr for dense
         // *top_k_bias receives the per-slot mask bias for build_attn_qsa, or nullptr if none is needed
         ggml_tensor * build_qsa_top_k(

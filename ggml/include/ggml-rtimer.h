@@ -1,6 +1,6 @@
 #pragma once
 
-// [TAG_ROUND_TIMERS] (ticket 0089) LLAMA_ROUND_TIMERS=1: per-round host phase timers, counters and GPU graph stamps,
+// LLAMA_ROUND_TIMERS=1: per-round host phase timers, counters and GPU graph stamps,
 // printed as per-round means at the end of each request. Off by default; when off every entry point returns at a
 // cached flag, and no GPU work or API call is added.
 

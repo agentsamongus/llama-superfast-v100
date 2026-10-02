@@ -36,9 +36,9 @@ llama_memory_recurrent::llama_memory_recurrent(
     this->n_rs_seq = n_rs_seq;
     rs_idx.assign(n_seq_max, 0);
 
-    // [TAG_SPEC_PIPELINE] rows for one backup copy of the snapshots, only when pipelined speculation is enabled
+    // rows for one backup copy of the snapshots, only when pipelined speculation is enabled
     {
-        // default on (ticket 0093), except on the qwen35 line (the 27B, ticket W1): its deployed launch (n-max 7) never pipelines, so it keeps
+        // default on, except on the qwen35 line (the 27B): its deployed launch (n-max 7) never pipelines, so it keeps
         // the rows off unless LLAMA_SPEC_PIPELINE=1; the server's default below is the same per-architecture one
         const char * e = getenv("LLAMA_SPEC_PIPELINE");
         const bool pipe_default = model.arch != LLM_ARCH_QWEN35;
@@ -218,7 +218,7 @@ bool llama_memory_recurrent::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos
                     cell.pos = p0 - 1;
                     return true;
                 }
-                // [TAG_SPEC_PIPELINE] past the last ubatch, into the one before it: read the backup of its snapshots,
+                // past the last ubatch, into the one before it: read the backup of its snapshots,
                 // valid while the last ubatch is the one placed right after the copy was taken
                 if (!pending && n_rs_bak > 0 && (size_t) seq_id < rs_bak.size()) {
                     auto & b = rs_bak[seq_id];
@@ -243,7 +243,7 @@ bool llama_memory_recurrent::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos
     } else if (seq_id < 0) {
         // seq_id is negative, then the range should include everything or nothing
         if (p0 != p1 && (p0 != 0 || p1 != std::numeric_limits<llama_pos>::max())) {
-            //printf("[DEBUG] inside `llama_memory_recurrent::seq_rm`: `seq_id` is negative, so returning false\n");
+            // printf("[DEBUG] inside `llama_memory_recurrent::seq_rm`: `seq_id` is negative, so returning false\n");
             return false;
         }
     }

@@ -4,8 +4,9 @@
 #include "fattn-tile.cuh"
 #include "fattn-vec.cuh"
 #include "fattn.cuh"
+#include "qsa-attn.cuh"
 
-// ticket S1 step 3 (fattn-verify-stream.cu)
+// the streaming verify kernel (fattn-verify-stream.cu)
 bool ggml_cuda_fattn_verify_stream_applies(const ggml_tensor * dst);
 void ggml_cuda_flash_attn_ext_verify_stream(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
 
@@ -155,7 +156,7 @@ static void ggml_cuda_flash_attn_ext_mma_f16_switch_ncols1(ggml_backend_cuda_con
     }
 
     if constexpr (ncols2 <= 16) {
-        // ticket 0120: the Volta mma kernel has no device code below 32 columns (NO_DEVICE_CODE traps), so it never takes this case
+        // the Volta mma kernel has no device code below 32 columns (NO_DEVICE_CODE traps), so it never takes this case
         if (Q->ne[1] <= 16/ncols2 && cc != GGML_CUDA_CC_VOLTA) {
             ggml_cuda_flash_attn_ext_mma_f16_case<DKQ, DV, 16/ncols2, ncols2>(ctx, dst);
             return;
@@ -203,13 +204,13 @@ static void ggml_cuda_flash_attn_ext_mma_f16_switch_ncols2(ggml_backend_cuda_con
 
     // On Volta the GQA optimizations aren't as impactful vs. minimizing wasted compute:
     if (cc == GGML_CUDA_CC_VOLTA) {
-        // ticket 0126: the 8-row verify on a BF16 cache (the call E23 routes to this kernel) puts the whole GQA group in one tile, so each KV head
+        // the 8-row verify on a BF16 cache (the call the width route sends to this kernel) puts the whole GQA group in one tile, so each KV head
         // is streamed once instead of gqa_ratio/ncols2 times: ncols2 = 8 with a group of up to 8 (the padded columns are guarded, fattn-mma-f16.cuh
         // Q load and store). LLAMA_FATTN_VERIFY_GQA8=0 restores the power-of-two divisor.
         static const bool verify_gqa8 = [] { const char * e = getenv("LLAMA_FATTN_VERIFY_GQA8"); return e ? atoi(e) != 0 : true; }();
         static const int verify_mma_min = [] { const char * e = getenv("LLAMA_FATTN_VERIFY_MMA_MIN"); return e ? atoi(e) : 4096; }();
         if constexpr (DKQ == 256 && DV == 256) {
-            // ticket S1: an F16 cache (the deployed launch) takes the same route
+            // an F16 cache (the deployed launch) takes the same route
             if (verify_gqa8 && verify_mma_min >= 0 && use_gqa_opt && gqa_ratio <= 8 && gqa_ratio > 2 && Q->ne[1] <= 8 && K->ne[1] >= verify_mma_min &&
                     (K->type == GGML_TYPE_BF16 || K->type == GGML_TYPE_F16) && K->type == V->type) {
                 ggml_cuda_flash_attn_ext_mma_f16_switch_ncols1<DKQ, DV, 8>(ctx, dst);
@@ -697,7 +698,7 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
     }
 
     if (volta_mma_available(cc) && Q->ne[0] != 40 && Q->ne[0] != 72) {
-        // ticket T1: the one-row call (the drafter's seven draft steps per round) on an f16 or bf16 cache of at least
+        // the one-row call (the drafter's seven draft steps per round) on an f16 or bf16 cache of at least
         // LLAMA_FATTN_ONE_ROW_MMA keys (default 4096, -1: never) goes to the mma kernel, which reads each KV head once per group
         // (the vec kernel reads it once per query head). The target's own one-row calls take the same route.
         static const int one_row_mma_min = [] { const char * e = getenv("LLAMA_FATTN_ONE_ROW_MMA"); return e ? atoi(e) : 4096; }();
@@ -708,11 +709,11 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
         if (can_use_vector_kernel && Q->ne[1] * gqa_ratio_eff <= 2) {
             return BEST_FATTN_KERNEL_VEC;
         }
-        // ticket 0120 (E23): the 8-row verify on a BF16 cache of at least LLAMA_FATTN_VERIFY_MMA_MIN tokens (default 4096, -1: never)
+        // the 8-row verify on a BF16 cache of at least LLAMA_FATTN_VERIFY_MMA_MIN tokens (default 4096, -1: never)
         // goes to the mma kernel, which reads the cache directly: the tile kernel is limited by the FMA pipe and 2.5 to 3.5 times
         // its byte floor at depth, the mma kernel is not (the mma kernel needs 32 columns on Volta: 16 rows, half of them padding)
         static const int verify_mma_min = [] { const char * e = getenv("LLAMA_FATTN_VERIFY_MMA_MIN"); return e ? atoi(e) : 4096; }();
-        // ticket T7: 2 to 8 rows take the same route, not only 8 (LLAMA_FATTN_VERIFY_ANY_WIDTH=0 restores the == 16 test); 1 row is T1's case above
+        // 2 to 8 rows take the same route, not only 8 (LLAMA_FATTN_VERIFY_ANY_WIDTH=0 restores the == 16 test); 1 row is the one-row case above
         static const bool verify_any_width = [] { const char * e = getenv("LLAMA_FATTN_VERIFY_ANY_WIDTH"); return e ? atoi(e) != 0 : true; }();
         const bool verify_rows_ok = verify_any_width ? (Q->ne[1] >= 2 && Q->ne[1] * gqa_ratio_eff <= 16) : (Q->ne[1] * gqa_ratio_eff == 16);
         const bool verify_to_mma = verify_mma_min >= 0 && verify_rows_ok && Q->ne[1] <= 8 && K->ne[1] >= verify_mma_min &&
@@ -761,6 +762,9 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
 
 size_t ggml_cuda_flash_attn_ext_get_alloc_size(int device, const ggml_tensor * dst) {
     GGML_ASSERT(dst->op == GGML_OP_FLASH_ATTN_EXT || dst->op == GGML_OP_FLASH_ATTN_EXT_BANDED);
+    if (ggml_cuda_qsa_attn_is_sparse(dst)) {
+        return ggml_nbytes(dst);
+    }
 
     const ggml_tensor * Q = dst->src[0];
     const ggml_tensor * K = dst->src[1];
@@ -780,7 +784,7 @@ size_t ggml_cuda_flash_attn_ext_get_alloc_size(int device, const ggml_tensor * d
             need_f16_V = need_f16_K;
             break;
         case BEST_FATTN_KERNEL_MMA_F16:
-            need_f16_K = !ggml_cuda_fattn_mma_reads_bf16(dst); // ticket 0120: the Volta mma kernel may read a BF16 cache directly
+            need_f16_K = !ggml_cuda_fattn_mma_reads_bf16(dst); // the Volta mma kernel may read a BF16 cache directly
             need_f16_V = need_f16_K;
             break;
         case BEST_FATTN_KERNEL_VEC: {
@@ -800,6 +804,11 @@ size_t ggml_cuda_flash_attn_ext_get_alloc_size(int device, const ggml_tensor * d
 
 void ggml_cuda_flash_attn_ext(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     ggml_cuda_set_device(ctx.device);
+    // QSA prompt batches: src[5] carries each query's selected cells (qsa-attn.cu)
+    if (ggml_cuda_qsa_attn_is_sparse(dst)) {
+        ggml_cuda_qsa_attn(ctx, dst);
+        return;
+    }
     switch (ggml_cuda_get_best_fattn_kernel(ggml_cuda_get_device(), dst)) {
         case BEST_FATTN_KERNEL_NONE:
             GGML_ABORT("fatal error");
@@ -820,5 +829,8 @@ void ggml_cuda_flash_attn_ext(ggml_backend_cuda_context & ctx, ggml_tensor * dst
 }
 
 bool ggml_cuda_flash_attn_ext_supported(int device, const ggml_tensor * dst) {
+    if (ggml_cuda_qsa_attn_is_sparse(dst)) {
+        return ggml_cuda_qsa_attn_supported(dst);
+    }
     return ggml_cuda_get_best_fattn_kernel(device, dst) != BEST_FATTN_KERNEL_NONE;
 }

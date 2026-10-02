@@ -6,7 +6,7 @@ void ggml_cuda_op_moe_weighted_reduction(ggml_backend_cuda_context & ctx,
                                          const ggml_tensor *         weights,
                                          ggml_tensor *               dst);
 
-// ticket 0056, LLAMA_FOLD_MOE_TAIL: add = the weighted sum of the experts + shexp * sigmoid(gate), in one launch
+// LLAMA_FOLD_MOE_TAIL: add = the weighted sum of the experts + shexp * sigmoid(gate), in one launch
 void ggml_cuda_op_moe_weighted_reduction_shexp_tail(ggml_backend_cuda_context & ctx,
                                                     const ggml_tensor *         experts,
                                                     const ggml_tensor *         expert_scale,

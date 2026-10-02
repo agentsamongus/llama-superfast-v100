@@ -246,7 +246,7 @@ public:
     void set_input_kq_mask   (ggml_tensor * dst, const llama_ubatch * ubatch, bool causal_attn) const;
     void set_input_pos_bucket(ggml_tensor * dst, const llama_ubatch * ubatch) const;
 
-    // [TAG_KQ_MASK_DEVICE] ticket T3: the backend of sched that holds the device mirror of the cells, when a KQ mask of
+    // the backend of sched that holds the device mirror of the cells, when a KQ mask of
     // this shape can be built on the device by set_input_kq_mask (the mask tensor is then placed on that backend),
     // or nullptr (the mask stays a host input). LLAMA_KQ_MASK_DEVICE=0 restores the host mask everywhere
     ggml_backend_t kq_mask_device_backend(ggml_backend_sched_t sched, const ggml_tensor * mask, bool causal_attn) const;
@@ -331,7 +331,7 @@ private:
 
     llama_kv_cells_vec & v_cells;
 
-    // [TAG_KQ_MASK_DEVICE] the device mirror of the cells for the KQ mask, I32 [3*size]: per cell the position if the
+    // the device mirror of the cells for the KQ mask, I32 [3*size]: per cell the position if the
     // cell holds sequence 0 (-1 otherwise), then ext.y, then ext.x; kept true from the cells' change journal
     // (llama_kv_cells::cjrnl_*) by every set_input_kq_mask that builds its mask on the device
     ggml_tensor * kqm_cells = nullptr;
@@ -477,7 +477,7 @@ public:
 
     void set_input_k_shift   (ggml_tensor * dst) const;
     void set_input_kq_mask   (ggml_tensor * dst, const llama_ubatch * ubatch, bool causal_attn) const;
-    ggml_backend_t kq_mask_device_backend(ggml_backend_sched_t sched, const ggml_tensor * mask, bool causal_attn) const; // [TAG_KQ_MASK_DEVICE]
+    ggml_backend_t kq_mask_device_backend(ggml_backend_sched_t sched, const ggml_tensor * mask, bool causal_attn) const; // 
     void set_input_pos_bucket(ggml_tensor * dst, const llama_ubatch * ubatch) const;
     void set_input_pos_rel_flat(ggml_tensor * dst, const llama_ubatch * ubatch, uint32_t extent) const; // inkling
 

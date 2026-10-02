@@ -92,7 +92,7 @@ std::vector<llama_token> common_sampler_sample_and_accept_n(struct common_sample
 
 uint32_t common_sampler_get_seed(const struct common_sampler * gsmpl);
 
-// [TAG_BACKEND_TOPK] exact backend top-k (toggle LLAMA_BACKEND_TOPK, default on)
+// exact backend top-k (toggle LLAMA_BACKEND_TOPK, default on)
 //
 // returns k when the sampler's result depends only on the k highest logits, in order: no grammar other than a lazy one
 // that has not triggered (toggle LLAMA_BACKEND_TOPK_GRAMMAR, default on), a reasoning budget only with
@@ -119,7 +119,7 @@ void common_sampler_set_backend_topk(struct common_sampler * gsmpl, const struct
 // rows sampled with backend top-k candidates, and how many of those fell back to the full logits
 void common_sampler_backend_topk_stats(const struct common_sampler * gsmpl, uint64_t * n_rows, uint64_t * n_full);
 
-// [TAG_SPEC_COUPLED] coupled drafting (ticket 0058): a copy of the target's sampler (common_sampler_clone) picks a
+// coupled drafting: a copy of the target's sampler (common_sampler_clone) picks a
 // draft token from the draft's candidates with the random draw the target's own sample will take at that row.
 // true when every sampled row takes exactly one draw that can be followed without the row's logits: the chain ends
 // in dist, with no other random sampler (mirostat, adaptive-p, an active xtc) and no backend sampling
@@ -133,7 +133,7 @@ void common_sampler_coupled_skip(struct common_sampler * gsmpl, llama_token tok)
 // forcing returns its forced token, with *forced set
 llama_token common_sampler_coupled_pick(struct common_sampler * gsmpl, const llama_token_data_array * cand, bool * forced);
 
-// [TAG_SPEC_REJECTION] rejection sampling for the MTP draft (ticket 0069), LLAMA_SPEC_REJECTION, default on (0: off; tickets 0093 and V5). the
+// rejection sampling for the MTP draft, LLAMA_SPEC_REJECTION, default on (0: off). the
 // draft samples each token x from q, its candidates through a copy of the target's sampler, and the verify accepts x
 // with probability min(1, p(x)/q(x)), p being the target's distribution after its chain; on a rejection it samples
 // the normalized residual max(0, p - q) and stops, and after every draft is accepted it samples the bonus token from
@@ -149,7 +149,7 @@ typedef std::vector<llama_token_data> common_rejection_q;
 // other random sampler, no backend sampling)
 bool common_sampler_rejection_ok(const struct common_sampler * gsmpl);
 
-// [TAG_SPEC_REJECTION] (ticket 0071) accept a drafted token into a copy of the target's sampler, as
+// accept a drafted token into a copy of the target's sampler, as
 // common_sampler_accept(gsmpl, token, true) does, except that its grammar takes the token only when the token fits it.
 // where the copy cannot follow the target (a triggered grammar constrains the row) the draft proposes its own argmax,
 // which need not fit, and the grammar would throw on it (a tool call's <|im_end|> followed by the draft's
@@ -163,7 +163,7 @@ void common_sampler_accept_draft(struct common_sampler * gsmpl, llama_token toke
 // generator (the target's own sampler). LLAMA_TOKEN_NULL with q empty and no draw when the copy cannot follow the
 // target at this row: a forcing reasoning budget (*forced gets its token), a grammar that applies, or no candidate
 // left. the caller then accepts the token into copy
-// [TAG_SPEC_REJECTION_PIPE] with gen (ticket 0070), the uniform comes from gen instead of rng's dist generator
+// with gen, the uniform comes from gen instead of rng's dist generator
 llama_token common_sampler_rejection_draft(struct common_sampler * copy, struct common_sampler * rng,
         const llama_token_data_array * cand, float temp, common_rejection_q & q, llama_token * forced, std::mt19937 * gen = nullptr);
 
@@ -178,7 +178,7 @@ llama_token common_sampler_rejection_step(const llama_token_data * p, size_t n_p
 // one by one. requires q.size() == draft.size(), every row non-empty and holding its drafted token. a row where the
 // step cannot follow the target's sample (a grammar that applies, a forcing reasoning budget, the chain leaving no
 // candidate) takes today's sample-and-match at that row. *n_step: rows that took the rejection step.
-// [TAG_SPEC_REJECTION_PIPE] (ticket 0070) idxs.size() == draft.size(): no bonus row, the round ends after the last
+// idxs.size() == draft.size(): no bonus row, the round ends after the last
 // draft (the pipeline's guess of the bonus token is that draft); a row whose q lacks its drafted token takes
 // sample-and-match. *n_accepted: the drafted tokens accepted
 std::vector<llama_token> common_sampler_sample_and_accept_n_rejection(struct common_sampler * gsmpl, struct llama_context * ctx,

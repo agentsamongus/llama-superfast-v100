@@ -72,7 +72,7 @@ void llama_model_qwen4exp::load_arch_hparams(llama_model_loader & ml) {
     // the converter writes 0 (dense) for the MTP block, but the checkpoint's MTP layer is a
     // full_attention layer with its own indexer, and the reference runs every full-attention layer,
     // the MTP module's included, as QSA. give a block that ships indexer weights the trunk's ratio.
-    // opt-in with LLAMA_MTP_QSA=1 (ticket 0026): it is faster from about 20K up (-3.4% per verify step at 64K) but
+    // opt-in with LLAMA_MTP_QSA=1: it is faster from about 20K up (-3.4% per verify step at 64K) but
     // still 0.7-1.2% slower below 8K, the headline range. unset or 0 keeps the file's 0: a plain cache and dense attention.
     static const bool mtp_qsa = [] {
         const char * e = getenv("LLAMA_MTP_QSA");
@@ -546,7 +546,7 @@ llama_model_qwen4exp::graph::graph(const llama_model & model, const llm_graph_pa
     ggml_build_forward_expand(gf, cur);
 }
 
-// [TAG_QSA_SEL_KEEP] the host side of the MTP draft's kept selection (llama_qsa_sel_keep), one per graph_mtp:
+// the host side of the MTP draft's kept selection (llama_qsa_sel_keep), one per graph_mtp:
 //   REUSE  a draft step: its tokens attend with their kept rows plus the cells added since (inputs below)
 //   STORE  any other decode whose block selection fits: its rows replace the kept ones
 //   FORGET the rest (a prompt ubatch, several streams): nothing is kept past it
@@ -759,9 +759,9 @@ llama_model_qwen4exp::graph_mtp::graph_mtp(const llama_model & model, const llm_
     ggml_tensor * top_k_bias = nullptr;
     ggml_tensor * top_k      = nullptr;
 
-    // [TAG_QSA_SEL_KEEP] LLAMA_MTP_QSA_REUSE (default 1): a draft step attends with the selection the catch-up
+    // LLAMA_MTP_QSA_REUSE (default 1): a draft step attends with the selection the catch-up
     // computed for the last verified row, plus the cells written since, and runs no indexer query. every other
-    // decode selects as before and keeps its selection. 0 selects in every decode, as ticket 0025 did.
+    // decode selects as before and keeps its selection. 0 selects in every decode, as the first version did.
     static const bool mtp_qsa_reuse = [] {
         const char * e = getenv("LLAMA_MTP_QSA_REUSE");
         return e == nullptr || atoi(e) != 0;
@@ -844,7 +844,7 @@ llama_model_qwen4exp::graph_mtp::graph_mtp(const llama_model & model, const llm_
         }
     }
 
-    // [TAG_MTP_CATCHUP_NOREAD] a decode with no outputs (the catch-up after every verify, and the draft's prompt
+    // a decode with no outputs (the catch-up after every verify, and the draft's prompt
     // ubatches) leaves nothing behind but its cache writes: no logits or h_nextn row is extracted, and every row
     // after the attention is dropped by inp_out_ids. so build only K and V and their writes (and, with QSA, the
     // indexer above, unchanged), and skip Q, the gate, the attention and wo. LLAMA_MTP_CATCHUP_NOREAD=0 builds them.
@@ -981,7 +981,7 @@ llama_model_qwen4exp::graph_mtp::graph_mtp(const llama_model & model, const llm_
     GGML_ASSERT(head_w && "QWEN4EXP MTP: missing LM head (nextn.shared_head_head or model.output)");
 
     if (model.head_subset_w && head_w == model.output && head_s == nullptr) {
-        // [TAG_DRAFT_VOCAB] the draft's logits over the subset rows only; build_sampling maps rows back to token ids
+        // the draft's logits over the subset rows only; build_sampling maps rows back to token ids
         cur = ggml_mul_mat(ctx0, model.head_subset_w, cur);
         res->t_logits_ids = model.head_subset_ids;
     } else {
@@ -1219,7 +1219,7 @@ ggml_tensor * llama_model_qwen4exp::graph::build_qsa_top_k(
 
     // the reference returns indexer_top_k + compress_ratio - 1: whole blocks plus the tail
     const int64_t width = std::min<int64_t>(n_kv, (int64_t) hparams.indexer_top_k + r - 1);
-    // [TAG_SPEC_PIPE_LOOSE] the unclamped width, for llama_pipe_rows_independent's view forecast
+    // the unclamped width, for llama_pipe_rows_independent's view forecast
     res->qsa.sel = std::max<int64_t>(res->qsa.sel, (int64_t) hparams.indexer_top_k + r - 1);
 
     if (blk_sel) {
@@ -1328,8 +1328,8 @@ ggml_tensor * llama_model_qwen4exp::graph::build_attn_qsa(
         const char * e = getenv("LLAMA_QSA_UNION");
         return e == nullptr || atoi(e) != 0;
     }();
-    // [TAG_SPEC_PIPE_LOOSE] the record llama_pipe_rows_independent reads (ticket 0068): the union is the one place a
-    // verify row reads the other tokens of its batch (tickets 0055, 0063)
+    // the record llama_pipe_rows_independent reads: the union is the one place a
+    // verify row reads the other tokens of its batch
     // a selection clamped to a narrow view widens with it up to sel (build_qsa_top_k); an unclamped one stays
     if (top_k) {
         auto & rec = res->qsa;
@@ -1347,7 +1347,7 @@ ggml_tensor * llama_model_qwen4exp::graph::build_attn_qsa(
             ggml_backend_buft_get_device(ggml_backend_buffer_get_type(k_src->buffer)) : nullptr;
 
         // the union only for single-sequence batches: after two concurrent requests shared one union,
-        // every later request decoded garbage (ticket 0033); the per-query form is correct there (ticket 0032)
+        // every later request decoded garbage; the per-query form is correct there
         const bool use_union = qsa_union && ubatch.n_seqs_unq == 1 && llama_qsa_union_applies(k, top_k, k_dev);
         res->qsa.union_used = res->qsa.union_used || use_union;
         {
@@ -1356,6 +1356,78 @@ ggml_tensor * llama_model_qwen4exp::graph::build_attn_qsa(
                     hparams.f_max_alibi_bias, hparams.attn_soft_cap ? hparams.f_attn_logit_softcapping : 0.0f,
                     /*pad_to*/ 256, k_dev, &fa, top_k_bias);
             res->add_fused_node({LLM_FUSED_OP_FLASH_ATTN, fa, il});
+            cb(cur, "kqv_out", il);
+
+            if (inp->self_v_rot) {
+                cur = llama_mul_mat_hadamard(ctx0, cur, inp->self_v_rot);
+            }
+
+            return cur;
+        }
+    }
+
+    // prompt batches (PentaCoxian's block-sparse prompt attention): one FLASH_ATTN_EXT node
+    // carrying each query's selected cells in src[5] (ggml-cuda/qsa-attn.cu) reads them straight from
+    // the cache, instead of the cache-sized mask and dense attention over every cell below. Same set
+    // of cells with the same mask entries (repeats dropped by top_k_bias), so the softmax is the same.
+    // LLAMA_QSA_SPARSE_PREFILL=0 keeps the dense form.
+    static const bool qsa_sparse_prefill = [] {
+        const char * e = getenv("LLAMA_QSA_SPARSE_PREFILL");
+        return e == nullptr || atoi(e) != 0;
+    }();
+    if (qsa_sparse_prefill && cparams.flash_attn && n_tokens > 8 && top_k_bias != nullptr &&
+            hparams.f_max_alibi_bias == 0.0f && !hparams.attn_soft_cap) {
+        const int64_t n_kv   = k->ne[2];
+        const int64_t width  = top_k->ne[0];
+        const int64_t n_tps  = top_k->ne[1];
+        const int64_t n_hkv  = k->ne[1];
+        const int64_t gqa    = n_hkv > 0 && q_cur->ne[1] % n_hkv == 0 ? q_cur->ne[1]/n_hkv : 0;
+        const bool sparse_ok =
+            width < n_kv && k->ne[3] == 1 && v->ne[3] == 1 && top_k->ne[3] == 1 && n_tps == n_tokens &&
+            top_k->type == GGML_TYPE_I32 && ggml_is_contiguous(top_k) &&
+            top_k_bias->type == GGML_TYPE_F32 && ggml_is_contiguous(top_k_bias) && top_k_bias->ne[0] == width &&
+            kq_mask->type == GGML_TYPE_F16 && kq_mask->ne[0] == n_kv && kq_mask->ne[1] >= n_tps &&
+            q_cur->type == GGML_TYPE_F32 && q_cur->ne[0] == 256 && q_cur->ne[2] == n_tokens &&
+            k->type == v->type && (k->type == GGML_TYPE_BF16 || k->type == GGML_TYPE_F16) &&
+            k->ne[0] == 256 && v->ne[0] == 256 && v->ne[1] == n_hkv && v->ne[2] == n_kv &&
+            k->nb[0] == ggml_type_size(k->type) && v->nb[0] == ggml_type_size(v->type) && v->nb[1] <= v->nb[2] &&
+            (gqa == 12 || gqa == 8 || gqa == 16 || gqa == 2 || gqa == 1);
+        if (sparse_ok) {
+            ggml_tensor * q = ggml_is_contiguous(q_cur) ? q_cur : ggml_cont(ctx0, q_cur);
+            q = ggml_reshape_3d(ctx0, q, q->ne[0], q->ne[1], n_tokens);
+
+            // mask entries of the selected cells, as llama_qsa_compact_attn gathers them
+            // one view per graph (qsa_mask_rows): a view per layer is a separate 128 MiB split input per card at 131K
+            ggml_tensor *& m_rows = qsa_mask_rows[kq_mask];
+            if (m_rows == nullptr) {
+                m_rows = ggml_view_4d(ctx0, kq_mask, 1, n_kv, n_tps, 1, kq_mask->nb[0], kq_mask->nb[1], kq_mask->nb[3], 0);
+            }
+            ggml_tensor * m = ggml_get_rows(ctx0, m_rows, ggml_reshape_3d(ctx0, top_k, width, n_tps, 1));
+            m = ggml_reshape_2d(ctx0, m, width, n_tps);
+            m = ggml_add(ctx0, m, ggml_reshape_2d(ctx0, top_k_bias, width, n_tps));
+            cb(m, "qsa_sparse_mask", il);
+
+            ggml_tensor * ids = ggml_reshape_2d(ctx0, top_k, width, n_tps);
+            ggml_tensor * k3  = ggml_view_3d(ctx0, k, k->ne[0], k->ne[1], k->ne[2], k->nb[1], k->nb[2], 0);
+            ggml_tensor * v3  = ggml_view_3d(ctx0, v, v->ne[0], v->ne[1], v->ne[2], v->nb[1], v->nb[2], 0);
+
+            ggml_tensor * out = ggml_new_tensor_3d(ctx0, GGML_TYPE_F32, 256, q->ne[1], n_tokens);
+            // FLASH_ATTN_EXT params: scale, max_bias, softcap, prec; [6] the group size the kernel expects
+            const float   fparams[3] = { kq_scale, 0.0f, 0.0f };
+            const int32_t prec       = GGML_PREC_F32;
+            const int32_t group      = 4;
+            memcpy((char *) out->op_params + 0*sizeof(int32_t), fparams, sizeof(fparams));
+            memcpy((char *) out->op_params + 3*sizeof(int32_t), &prec, sizeof(prec));
+            memcpy((char *) out->op_params + 6*sizeof(int32_t), &group, sizeof(group));
+            out->op     = GGML_OP_FLASH_ATTN_EXT;
+            out->src[0] = q;
+            out->src[1] = k3;
+            out->src[2] = v3;
+            out->src[3] = m;
+            out->src[5] = ids;
+            cb(out, "qsa_sparse_attn", il);
+
+            ggml_tensor * cur = ggml_reshape_2d(ctx0, out, 256*q->ne[1], n_tokens);
             cb(cur, "kqv_out", il);
 
             if (inp->self_v_rot) {
@@ -1396,7 +1468,7 @@ ggml_tensor * llama_model_qwen4exp::graph::build_attn_qsa(
 
     // TODO: enable sparse attention when we are ready
     // ref: https://github.com/ggml-org/llama.cpp/pull/27970
-    //ggml_tensor * cur = build_attn_mha(q, k, v, nullptr, kq_mask_top_k, nullptr, nullptr, top_k->ne[0], kq_scale, il);
+    // ggml_tensor * cur = build_attn_mha(q, k, v, nullptr, kq_mask_top_k, nullptr, nullptr, top_k->ne[0], kq_scale, il);
     ggml_tensor * cur = build_attn_mha(q, k, v, nullptr, kq_mask_top_k, nullptr, nullptr, 0, kq_scale, il);
     cb(cur, "kqv_out", il);
 

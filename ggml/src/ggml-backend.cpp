@@ -833,16 +833,16 @@ struct ggml_backend_sched {
 
     int debug;
 
-    // [TAG_SPEC_PIPELINE] a copy into a split's input slot also waits, on the input backend's stream, for the split
+    // a copy into a split's input slot also waits, on the input backend's stream, for the split
     // backend to finish with that slot (see ggml_backend_sched_set_pipe)
     bool pipe_src_wait;
 
-    // [TAG_SPEC_PIPELINE] stop a compute before the first split on this backend (-1: never), and the split to resume
+    // stop a compute before the first split on this backend (-1: never), and the split to resume
     // from (-1: nothing held); see ggml_backend_sched_set_hold
     int hold_backend_id;
     int held_split;
 
-    // [TAG_UPLOAD_BATCH] ticket 0062 (LLAMA_SCHED_BATCH_UPLOAD, default on): a split's user inputs are uploaded
+    // (LLAMA_SCHED_BATCH_UPLOAD, default on): a split's user inputs are uploaded
     // without a sync each and synced once, before the split's compute is queued. per backend, the backend's
     // entry points (ggml_backend_upload_nosync/_sync, from its reg), or NULL: one sync per input as before
     bool (*upload_nosync[GGML_SCHED_MAX_BACKENDS])(struct ggml_tensor * dst, const void * data, size_t size);
@@ -1670,7 +1670,7 @@ static enum ggml_status ggml_backend_sched_compute_splits_from(ggml_backend_sche
         int split_backend_id = split->backend_id;
         ggml_backend_t split_backend = sched->backends[split_backend_id];
 
-        // [TAG_SPEC_PIPELINE] held: the rest runs at ggml_backend_sched_resume, or never (ggml_backend_sched_abort_held)
+        // held: the rest runs at ggml_backend_sched_resume, or never (ggml_backend_sched_abort_held)
         if (split_first == 0 && split_id > 0 && split_backend_id == sched->hold_backend_id) {
             sched->held_split = split_id;
             return GGML_STATUS_SUCCESS;
@@ -1686,7 +1686,7 @@ static enum ggml_status ggml_backend_sched_compute_splits_from(ggml_backend_sche
             }
         }
 
-        // [TAG_UPLOAD_BATCH] the split's user-input uploads not yet synced (the last one's destination), and whether the
+        // the split's user-input uploads not yet synced (the last one's destination), and whether the
         // split backend has been waited for in this split. nothing records the split's event inside this loop, so one
         // wait covers every input
         struct ggml_tensor * upload_last = NULL;
@@ -1708,7 +1708,7 @@ static enum ggml_status ggml_backend_sched_compute_splits_from(ggml_backend_sche
                 const bool batch = sched->upload_nosync[split_backend_id] != NULL && input != input_cpy &&
                                    input->buffer != NULL && ggml_backend_buffer_is_host(input->buffer);
                 // inputs from the user must be copied immediately to prevent the user overwriting the data before the copy is done
-                // [TAG_UPLOAD_BATCH] batched: the data is on the device and the source free again at upload_flush,
+                // batched: the data is on the device and the source free again at upload_flush,
                 // which runs before this split's compute is queued and before any read of an uploaded tensor
                 if (!(batch && split_waited)) {
                     if (sched->events[split_backend_id][sched->cur_copy] != NULL) {
@@ -1747,7 +1747,7 @@ static enum ggml_status ggml_backend_sched_compute_splits_from(ggml_backend_sche
                     const size_t expert_size = node->op == GGML_OP_MUL_MAT_ID ? input->nb[2] : input->nb[1];
 
                     ggml_backend_synchronize(input_backend);
-                    upload_flush(); // [TAG_UPLOAD_BATCH] the ids below may be an uploaded input
+                    upload_flush(); // the ids below may be an uploaded input
 
                     // get the ids
                     ggml_tensor * ids_tensor = node->src[2];
@@ -1825,7 +1825,7 @@ static enum ggml_status ggml_backend_sched_compute_splits_from(ggml_backend_sche
                     }
                     copy_experts(first_id, last_id);
                 } else {
-                    // [TAG_SPEC_PIPELINE] an async copy runs on the input backend's stream, which the wait above does not
+                    // an async copy runs on the input backend's stream, which the wait above does not
                     // order: when a graph is reused on the same copy slot while the previous compute is still in
                     // flight, the split backend may still be reading this slot, so the input stream waits for it too
                     if (sched->pipe_src_wait && input_backend != split_backend && input_backend->iface.event_wait != NULL &&
@@ -1847,7 +1847,7 @@ static enum ggml_status ggml_backend_sched_compute_splits_from(ggml_backend_sche
             }
         }
 
-        upload_flush(); // [TAG_UPLOAD_BATCH]
+        upload_flush();
 
         if (!sched->callback_eval) {
             enum ggml_status ec = ggml_backend_graph_compute_async(split_backend, &split->graph);
@@ -1968,7 +1968,6 @@ ggml_backend_sched_t ggml_backend_sched_new(
     sched->hold_backend_id = -1;
     sched->held_split = -1;
 
-    // [TAG_UPLOAD_BATCH]
     {
         const char * e = getenv("LLAMA_SCHED_BATCH_UPLOAD");
         const bool on = e == nullptr || atoi(e) != 0;
@@ -2366,7 +2365,7 @@ struct ggml_backend_graph_copy ggml_backend_graph_copy(ggml_backend_t backend, s
         };
     }
 
-    //printf("copy buffer size: %zu MB\n", ggml_backend_buffer_get_size(buffer) / 1024 / 1024);
+    // printf("copy buffer size: %zu MB\n", ggml_backend_buffer_get_size(buffer) / 1024 / 1024);
 
     // copy data and init views
     for (int i = 0; i < graph->n_nodes; i++) {
@@ -2618,7 +2617,7 @@ ggml_backend_buffer_t ggml_backend_cpu_buffer_from_ptr(void * ptr, size_t size) 
     return ggml_backend_buffer_init(ggml_backend_cpu_buffer_from_ptr_type(), ggml_backend_cpu_buffer_from_ptr_i, ptr, size);
 }
 
-// [TAG_ROUND_TIMERS] (ticket 0089) the per-round timer registry behind LLAMA_ROUND_TIMERS (ggml-rtimer.h)
+// the per-round timer registry behind LLAMA_ROUND_TIMERS (ggml-rtimer.h)
 
 #include "ggml-rtimer.h"
 

@@ -107,7 +107,7 @@ public:
     }
 
     // move cell isrc to idst (used during defrag)
-    //void mv(uint32_t isrc, uint32_t idst) {
+    // void mv(uint32_t isrc, uint32_t idst) {
     //    assert(isrc < pos.size());
     //    assert(idst < pos.size());
 
@@ -406,7 +406,7 @@ public:
         return jrnl.pos[k - jrnl.base];
     }
 
-    // [TAG_KQ_MASK_DEVICE] ticket T3: the same kind of journal, of cell indices instead of positions, for a consumer
+    // the same kind of journal, of cell indices instead of positions, for a consumer
     // that mirrors the cells on the device (llama_kv_cache's cell mirror for the KQ mask). Every change to a cell's
     // position, sequences or ext records the cell. Same epoch/base protocol as the position journal above
     void cjrnl_enable() {
@@ -658,7 +658,7 @@ private:
 
     journal jrnl;
 
-    // [TAG_KQ_MASK_DEVICE] the cell-index journal, same semantics as journal
+    // the cell-index journal, same semantics as journal
     struct cell_journal {
         static constexpr size_t cap = 1u << 16;
 

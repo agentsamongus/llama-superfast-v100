@@ -4,7 +4,7 @@
 
 // rms_norm_f32<256> (ncols < 1024) then scale_f32 on one row of S_v floats held as x[r] = row[r*32 + lane]:
 // rms_norm's warp w sums row[32w .. 32w+31]^2 and warp 0 then sums the 8 warp totals, so the same two
-// butterfly levels over the same operands give the same bits (ticket 0029, LLAMA_GDN_FUSE_QKNORM)
+// butterfly levels over the same operands give the same bits (LLAMA_GDN_FUSE_QKNORM)
 template <int rows_per_lane>
 static __device__ __forceinline__ void gdn_fold_rms_scale(float (&x)[rows_per_lane], const int lane, const int ncols,
                                                           const float eps, const float scale, const float bias) {
@@ -225,13 +225,13 @@ gated_delta_net_cuda(const float * q,
     }
 }
 
-// Decode and verify batches (ticket 0084, LLAMA_GDN_STAGED, default on): the inputs of every token do not depend on
+// Decode and verify batches (LLAMA_GDN_STAGED, default on): the inputs of every token do not depend on
 // the state, yet gated_delta_net_cuda prepares them inside its token loop, so each warp's serial chain holds, per
 // token, the loads of k and q, their folded L2 norms (about fifty dependent shuffles), the gates and the loads of v.
 // Here the block's warps first stage every token's k and q (normalized when folded), decay and beta in shared memory,
 // each token prepared once per block by one warp with the same expressions, and the recurrence then reads them.
 // Every value is computed by the same operations in the same order as there, so outputs and states are bit-identical.
-// Each warp owns cpw adjacent columns (ticket U4, LLAMA_GDN_COLS_PER_WARP 1, 2 or 4, default 4): lane l still holds
+// Each warp owns cpw adjacent columns (LLAMA_GDN_COLS_PER_WARP 1, 2 or 4, default 4): lane l still holds
 // rows r*32 + l of each of them, so every kv[col] and attn[col] is the same four terms per lane summed in the same
 // order and reduced by the same butterfly as at one column; the cpw columns' chains are independent and interleave,
 // and a head's inputs are staged by cpw times fewer blocks. cpw = 1 is the kernel as it was.
@@ -496,7 +496,7 @@ static void launch_gated_delta_net(
         int64_t sb1,   int64_t sb2, int64_t sb3,
         int64_t neqk1, int64_t rq3,
         float scale, int64_t state_slot_stride, int K, const ggml_cuda_gdn_fold & fd, cudaStream_t stream) {
-    //TODO: Add chunked kernel for even faster pre-fill
+    // TODO: Add chunked kernel for even faster pre-fill
     const int warp_size = ggml_cuda_info().devices[ggml_cuda_get_device()].warp_size;
     const int num_warps = 4;
     dim3      grid_dims(H, n_seqs, (S_v + num_warps - 1) / num_warps);
@@ -515,7 +515,7 @@ static void launch_gated_delta_net(
     }();
     if constexpr (!KDA) {
         if (staged && n_tokens <= GGML_CUDA_GDN_STAGED_MAX_TOKENS && warp_size == 32 && (S_v == 64 || S_v == 128)) {
-            // LLAMA_GDN_COLS_PER_WARP: columns per warp (1, 2 or 4, default 4); 1 is the one-column kernel of ticket 0084.
+            // LLAMA_GDN_COLS_PER_WARP: columns per warp (1, 2 or 4, default 4); 1 is the earlier one-column kernel.
             // S_v (64 or 128) is a multiple of every n_warps * cpw here, 16 * 4 = 64 at most
             static const int cpw_staged = [] {
                 const char * e = getenv("LLAMA_GDN_COLS_PER_WARP");
@@ -523,7 +523,7 @@ static void launch_gated_delta_net(
                 return n == 1 || n == 2 ? n : 4;
             }();
             // LLAMA_GDN_STAGED_WARPS: warps per block (4, 8 or 16), so fewer blocks prepare each head's inputs; default 8
-            // at several columns per warp (ticket U4: at 8 tokens each warp then stages one token), 4 at one column
+            // at several columns per warp (at 8 tokens each warp then stages one token), 4 at one column
             static const int n_warps_staged = [] {
                 const char * e = getenv("LLAMA_GDN_STAGED_WARPS");
                 const int n = e ? atoi(e) : (cpw_staged > 1 ? 8 : 4);
@@ -670,13 +670,13 @@ static void ggml_cuda_op_gated_delta_net_impl(
         state_slot_stride = cache->slot_stride;
     }
 
-    // chains folded into this launch (ticket 0029)
+    // chains folded into this launch
     static const ggml_cuda_gdn_fold no_fold;
     const bool fold = fold_in != nullptr;
     const ggml_cuda_gdn_fold & fd = fold ? *fold_in : no_fold;
     GGML_ASSERT(!fold || !kda);
 
-    // LLAMA_GDN_CHUNKED (ticket T5, default on): prefill batches run chunked on the tensor cores (gated_delta_net_chunked.cuh)
+    // LLAMA_GDN_CHUNKED (default on): prefill batches run chunked on the tensor cores (gated_delta_net_chunked.cuh)
     // for all tokens but the last K, whose snapshots the rollback reads; those K (none when K == 1) run token-serial
     // below from the chunked state, so every snapshot is a state the recurrence reaches token by token
     static const bool chunked_on = [] {

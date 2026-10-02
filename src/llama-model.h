@@ -657,7 +657,7 @@ struct llama_model {
     struct ggml_tensor * output_s    = nullptr;
     struct ggml_tensor * output_in_s = nullptr;
 
-    // [TAG_DRAFT_VOCAB] a row subset of the LM head (set_head_subset): an MTP draft computes its logits over these
+    // a row subset of the LM head (set_head_subset): an MTP draft computes its logits over these
     // rows only, and head_subset_ids maps a subset row back to its token id
     struct ggml_tensor * head_subset_w   = nullptr;
     struct ggml_tensor * head_subset_ids = nullptr;
@@ -722,7 +722,7 @@ struct llama_model {
 
     std::vector<llama_layer> layers;
 
-    //Dense linear projections for SentenceTransformers models like embeddinggemma
+    // Dense linear projections for SentenceTransformers models like embeddinggemma
     // For Sentence Transformers models structure see
     // https://sbert.net/docs/sentence_transformer/usage/custom_models.html#structure-of-sentence-transformer-models
     struct ggml_tensor * dense_2_out_layers   = nullptr;
@@ -798,10 +798,10 @@ struct llama_model {
     virtual void load_vocab  (llama_model_loader & ml) = 0;
     virtual bool load_tensors(llama_model_loader & ml) = 0; // returns false if cancelled by progress_callback
 
-    // [TAG_DRAFT_VOCAB] copy the rows ids[0..n) of the LM head (output) into head_subset_w on the head's own buffer
+    // copy the rows ids[0..n) of the LM head (output) into head_subset_w on the head's own buffer
     // type, with the id map in head_subset_ids; false (and nothing set) if the head does not allow it
     bool set_head_subset(const int32_t * ids, int32_t n);
-    // ticket 0101: the same for a DFlash2 draft, which borrows its head: rows of `src` (the borrowed head) or of output.weight in the
+    // the same for a DFlash2 draft, which borrows its head: rows of `src` (the borrowed head) or of output.weight in the
     // GGUF file `path`, on its output_norm's buffer type, repacked by the DFlash2 routes
     bool set_head_subset_dflash(const int32_t * ids, int32_t n, const ggml_tensor * src, const char * path);
     bool set_head_subset_rows(const int32_t * ids, int32_t n, const ggml_tensor * src, const char * path,

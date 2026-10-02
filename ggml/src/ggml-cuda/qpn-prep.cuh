@@ -1,8 +1,8 @@
 #pragma once
 
-// The prepared input of the tensor-core weight products (mmvq-qpn.cu, tickets 0078, 0086, 0091): the ONE definition of
+// The prepared input of the tensor-core weight products (mmvq-qpn.cu,, 0086, 0091): the ONE definition of
 // its layout and its arithmetic. qpn_prep_kernel calls it, and so does every kernel that writes a product's input
-// directly (ticket 0090). Write every byte through the functions below, so a layout change here reaches every writer.
+// directly. Write every byte through the functions below, so a layout change here reaches every writer.
 //
 // For T tokens (1..8) and K = 256*nsb columns, per 256-column slice sb and token t:
 //   xh : fp16 of x * 2^-sh, 8 consecutive columns per 16-byte fragment, in [sb][g = 0..31][t][8] order

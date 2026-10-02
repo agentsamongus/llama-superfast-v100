@@ -79,14 +79,14 @@ struct ring_buffer {
         return value;
     }
 
-    //T & operator[](size_t i) {
+    // T & operator[](size_t i) {
     //    if (i >= sz) {
     //        throw std::runtime_error("ring buffer: index out of bounds");
     //    }
     //    return data[(first + i) % capacity];
     //}
 
-    //const T & at(size_t i) const {
+    // const T & at(size_t i) const {
     //    if (i >= sz) {
     //        throw std::runtime_error("ring buffer: index out of bounds");
     //    }
@@ -1415,7 +1415,6 @@ struct llama_sampler * llama_sampler_init_dist(uint32_t seed) {
     );
 }
 
-// [TAG_SPEC_REJECTION] (ticket 0069)
 bool llama_sampler_chain_draw_uniform(struct llama_sampler * chain, double * u) {
     if (chain == nullptr || chain->iface != &llama_sampler_chain_i) {
         return false;
@@ -2871,7 +2870,7 @@ struct llama_sampler * llama_sampler_init_grammar_lazy_patterns(
     return llama_sampler_init_grammar_impl(vocab, grammar_str, grammar_root, /* lazy= */ true, nullptr, 0, trigger_tokens, num_trigger_tokens, trigger_patterns, num_trigger_patterns);
 }
 
-// [TAG_BACKEND_TOPK] llama_grammar_apply_impl returns before touching cur_p while the grammar awaits its trigger
+// llama_grammar_apply_impl returns before touching cur_p while the grammar awaits its trigger
 bool llama_sampler_grammar_awaiting_trigger(const struct llama_sampler * smpl) {
     if (smpl == nullptr || smpl->iface != &llama_sampler_grammar_i) {
         return false;

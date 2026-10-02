@@ -65,7 +65,7 @@ struct llama_cparams {
 
     llama_context * ctx_other;
 
-    // [TAG_DFLASH2_FEAT_DEV] (ticket 0101) a target: the enabled layer inputs of a decode that is one ubatch of at most this many
+    // a target: the enabled layer inputs of a decode that is one ubatch of at most this many
     // tokens stay on the device (no host copy), for a DFlash2 draft's injection to copy device to device; 0 = always to the host
     int32_t layer_inp_dev_rows = 0;
     // ... a DFlash2 draft: its next embd decode takes its features from ctx_other's device-held layer inputs

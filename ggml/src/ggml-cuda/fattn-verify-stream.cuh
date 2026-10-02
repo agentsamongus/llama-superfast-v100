@@ -1,5 +1,5 @@
 #pragma once
-// tickets S1 step 3 and T4: the 1..8-row verify's / draft step's attention over an F16 cache at depth, streamed on Volta (sm_70).
+// the 1..8-row verify's / draft step's attention over an F16 cache at depth, streamed on Volta (sm_70).
 //
 // Second design (T4). One block (8 warps, one per SM) per (KV head, slice of the sequence), blockIdx.x = kvh + n_kv_heads*split.
 // All NR = 48 query rows of the group (8 tokens x G = 6 heads) are resident; Q is staged once in shared memory as f16, pre-scaled

@@ -1,4 +1,4 @@
-// Test for ggml_qsa_select, the qwen4exp QSA block selection (ticket 0018).
+// Test for ggml_qsa_select, the qwen4exp QSA block selection.
 //
 // A brute-force reference written here (sort every selectable block by score desc, then block
 // index asc), the CPU backend and every GPU backend must produce the same result bit for bit,

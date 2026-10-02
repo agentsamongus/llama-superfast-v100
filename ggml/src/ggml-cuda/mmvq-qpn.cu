@@ -1,5 +1,5 @@
 // Volta tensor-core products for the dense K-quants (Q4_K, Q5_K, Q6_K) at 1 to 8 tokens, on weights repacked into
-// mma fragment order once at load (ticket 0078, toggle LLAMA_MMVQ_QPN).
+// mma fragment order once at load (toggle LLAMA_MMVQ_QPN).
 //
 // The design follows NInfer's QPN kernels (github.com/... ninfer-v100, Apache-2.0: ops/linear/nvfp4/nvfp4_volta_qpn_gemm.cuh,
 // which credits the "v100-skinny" project): tokens are the 8-row M side of mma.sync.m8n8k4 (zero-padded), each quadpair
@@ -23,7 +23,7 @@
 // from per-32 activation sums through one more mma) and the activations' power-of-two range scale are applied to the
 // fp32 accumulators once per superblock.
 //
-// IQ4_XS and IQ4_NL (ticket 0085) hold 4-bit indices into the 16-entry int8 codebook kvalues_iq4nl. Their blocks (136
+// IQ4_XS and IQ4_NL hold 4-bit indices into the 16-entry int8 codebook kvalues_iq4nl. Their blocks (136
 // and 18 bytes) are not 16-byte aligned, so they too are only read repacked; a tile-superblock keeps its size:
 //   IQ4_XS (8 chunks + 256 bytes): one chunk per sub-block j, then each row's 8-byte GGUF header (d, scales_h,
 //                      scales_l) verbatim, in row order
@@ -34,7 +34,7 @@
 // (ls - 32 and -1152*(ls - 32), both exact; d in fp32 per superblock), and one HSUB2 and one HMUL2 give kv*d_j for
 // IQ4_NL, rounded once exactly as ggml's fp16 dequantization rounds it.
 //
-// Q3_K and Q8_0 (ticket 0096), also in place and the same size:
+// Q3_K and Q8_0, also in place and the same size:
 //   Q3_K (6 chunks + 448 bytes): 4 chunks of the codes' low 2 bits, 2 chunks of their high bits (hmask), then each row's
 //                      12 scale bytes verbatim (row r at 12r, so 4-byte aligned), then the 32 rows' d as Q6_K stores them
 //                      (rows r and r + 2 adjacent). Low-bit word w (16 columns 16w..16w+15, one 16-column sub-block)
@@ -112,14 +112,14 @@ template <> struct qpn_t<GGML_TYPE_IQ4_NL> {
     static constexpr bool mins = false;
     static constexpr int  bit  = GGML_CUDA_QPN_IQ4_NL;
 };
-template <> struct qpn_t<GGML_TYPE_Q3_K> { // ticket 0096
+template <> struct qpn_t<GGML_TYPE_Q3_K> {
     typedef block_q3_K block;
     static constexpr int  NCH  = 6;
     static constexpr int  TAIL = 448;
     static constexpr bool mins = false;
     static constexpr int  bit  = GGML_CUDA_QPN_Q3_K;
 };
-// Q8_0 (ticket 0096): the 8 blocks of a 256-column span of one row
+// Q8_0: the 8 blocks of a 256-column span of one row
 struct qpn_q8_0_sb { block_q8_0 b[QK_K/QK8_0]; };
 template <> struct qpn_t<GGML_TYPE_Q8_0> {
     typedef qpn_q8_0_sb block;
@@ -137,7 +137,7 @@ static_assert(qpn_tsb<GGML_TYPE_IQ4_NL>() ==  9*QPN_CHUNK,       "IQ4_NL layout"
 static_assert(qpn_tsb<GGML_TYPE_Q3_K>()   ==  6*QPN_CHUNK + 448, "Q3_K layout");
 static_assert(qpn_tsb<GGML_TYPE_Q8_0>()   == 17*QPN_CHUNK,       "Q8_0 layout");
 template <ggml_type type> static constexpr __host__ __device__ bool qpn_iq4() { return type == GGML_TYPE_IQ4_XS || type == GGML_TYPE_IQ4_NL; }
-// the types of ticket 0096, which run only the streaming loop (qpn_stream_loop), at every width
+// the types of, which run only the streaming loop (qpn_stream_loop), at every width
 template <ggml_type type> static constexpr __host__ __device__ bool qpn_new() { return type == GGML_TYPE_Q3_K || type == GGML_TYPE_Q8_0; }
 
 // ------------------------------------------------------------------------------------------------------------------
@@ -192,7 +192,7 @@ static __device__ __forceinline__ void qpn_set_code(block_iq4_xs * b, const int 
 static __device__ __forceinline__ void qpn_set_code(qpn_iq4_nl_sb * b, const int k, const int q) {
     b->b[k/32].qs[k % 16] |= q << (4*((k % 32)/16));
 }
-// Q3_K (ticket 0096): the 3-bit code c = q2 | h << 2 of column k, the value being d*(s - 32)*(c - 4)
+// Q3_K: the 3-bit code c = q2 | h << 2 of column k, the value being d*(s - 32)*(c - 4)
 static __device__ __forceinline__ int qpn_code(const block_q3_K * b, const int k) {
     const int q2 = (b->qs[32*(k/128) + k % 32] >> (2*((k % 128)/32))) & 3;
     const int h  = (b->hmask[k % 32] >> (k/32)) & 1;
@@ -476,7 +476,7 @@ static __device__ __forceinline__ half2 qpn_bytes_h2(const uint32_t w, const int
 
 // the A fragment of one code word: sc*q (Q4_K, Q5_K) or sc*(q - 32) (Q6_K) for its 8 columns, from s16 = sc/16 and
 // z = -64*sc or -96*sc; hw holds the high bits of this word already rotated by its word offset
-// mg: QPN_MAGIC. The streaming loop passes it from a register the compiler cannot fold into an immediate (ticket U8 (b)), so that
+// mg: QPN_MAGIC. The streaming loop passes it from a register the compiler cannot fold into an immediate (b), so that
 // "x & mask | magic" is one LOP3 (two register operands, one immediate) and a half2's two ORs are two LOP3 instead of three; same values
 template <ggml_type type>
 static __device__ __forceinline__ void qpn_decode(tile<32, 4, half2> & A, const uint32_t w, const uint32_t hw, const half2 s16, const half2 z,
@@ -616,13 +616,13 @@ static __device__ __noinline__ void qpn_fallback(
 // dp.x; IQ4_XS: the lane's row's header),
 // xk this superblock's activation fragments of token nB (fragment of column group g at xk[g*T]; shared memory if
 // STAGE). Adds the superblock's contribution to the lane's C elements D and marks tokens whose slice is not finite.
-// A register ring (ticket 0086): as soon as a chunk of buf (or dp) has been read for the last time, the same chunk of
+// A register ring: as soon as a chunk of buf (or dp) has been read for the last time, the same chunk of
 // the next superblock (at Wn; if more) is requested into it, so each load has about one superblock of lead with no
-// second buffer. The arithmetic is that of ticket 0078/0085, in the same order. Without RING the caller holds a second
+// second buffer. The arithmetic is that of the earlier whole-superblock kernels, in the same order. Without RING the caller holds a second
 // buffer and loads the whole next superblock itself, as before.
 #define QPN_NEXT(c) do { if (RING && more) { buf[c] = qpn_ldg_w(Wn + (c)*QPN_CHUNK); } } while (0)
 template <ggml_type type> static constexpr __host__ __device__ int qpn_ring_min_t() {
-    // measured (ticket 0086, microbenchmark on the real tensors, card 1, SM clock 1380 MHz): Q6_K's spills go (23-32
+    // measured (microbenchmark on the real tensors, card 1, SM clock 1380 MHz): Q6_K's spills go (23-32
     // LDL in the loop -> 1-6) and every shape is 22-40% faster at T = 3, 4, 8; Q5_K is 9-25% faster at T = 8 but up
     // to 15% slower at T = 3, 4 (ffn down, GDN qkv, GDN out); Q4_K and IQ4_XS are 0-6% slower
     return type == GGML_TYPE_Q6_K ? 1 : type == GGML_TYPE_Q5_K ? 5 : 99;
@@ -839,9 +839,9 @@ static __device__ __forceinline__ void qpn_superblock(
 // STAGE: the block's activations are copied to shared memory first. The S warps of a tile add up in shared memory;
 // with P > 1 the P blocks of a tile leave their partial sums in ws and the last one to finish (a per-stream, per-tile
 // counter) adds them in the order p = 0 .. P-1, so the result does not depend on which block finishes last.
-// One register buffer: each chunk of the next superblock is requested once the current one has been read (ticket 0086:
-// inside qpn_superblock, chunk by chunk).
-// Streaming (ticket 0086 H2 for Q4_K/Q5_K; ticket 0091: every type): the superblock loop with only what a superblock needs
+// One register buffer: each chunk of the next superblock is requested once the current one has been read
+// (inside qpn_superblock, chunk by chunk).
+// Streaming (first for Q4_K/Q5_K, then for every type): the superblock loop with only what a superblock needs
 // throughout (the header or scale chunk, the tail entry) and a lookahead of two code chunks and one high-bit chunk in
 // registers (about 24 weight registers instead of 88), so the kernel fits 64-80 registers and 24-32 warps per SM; latency
 // is hidden with warps, not with register buffers. The arithmetic is qpn_superblock's, expression for expression and in
@@ -850,9 +850,9 @@ static __device__ __forceinline__ void qpn_superblock(
 //   Q6_K      : scale chunk 12, d in the tail, high-bit chunks 8-11 (one per 2 code chunks), codes from chunk 0
 //   IQ4_XS    : the row's 8-byte header in the tail, codes from chunk 0
 //   IQ4_NL    : the d_j chunk 8, codes from chunk 0
-//   Q3_K      : (ticket 0096) the scales and d in the tail, high-bit chunks 4-5 (one per 4 units), low-bit chunks from 0 (one per
+//   Q3_K      : the scales and d in the tail, high-bit chunks 4-5 (one per 4 units), low-bit chunks from 0 (one per
 //               2 units; so the lookahead of two code chunks is 4 units)
-//   Q8_0      : (ticket 0096) the d_j chunk 16, codes from chunk 0 (two per unit)
+//   Q8_0      : the d_j chunk 16, codes from chunk 0 (two per unit)
 // A unit j is the superblock's 32 columns 32j..32j+31 (4 fragments of 8); a type has CPU2 code chunks per 2 units.
 template <ggml_type type> struct qpn_stream_t {
     static constexpr int CH0 = type == GGML_TYPE_Q4_K ? 1 : type == GGML_TYPE_Q5_K ? 3 : 0;          // first code chunk
@@ -866,7 +866,7 @@ template <ggml_type type> struct qpn_stream_t {
     static constexpr int CPU2 = type == GGML_TYPE_Q3_K ? 1 : type == GGML_TYPE_Q8_0 ? 4 : 2;          // code chunks per 2 units
 };
 
-// what the lanes of padding tokens (T <= token < 8) read instead of a real token's fragments (ticket 0091, the target design's
+// what the lanes of padding tokens (T <= token < 8) read instead of a real token's fragments (the target design's
 // item 3): zeros, so they no longer depend on real rows; their outputs are never written, and a real token's C column depends
 // only on its own B column, so the outputs are unchanged. It is the same one load per lane (a warp-wide LDG.128 either way).
 static __device__ uint4 qpn_zero_x[32*8];
@@ -881,7 +881,7 @@ static __device__ __forceinline__ void qpn_stream_loop(
     typedef tile<32, 8, float>                               tile_C;
     typedef qpn_stream_t<type> st;
     constexpr int CH0 = st::CH0, HDR = st::HDR, NHB = st::NHB, HB0 = st::HB0, JPH = st::JPH;
-    // QPN_MAGIC for qpn_decode, as a register (ticket U8 (b)): qpn_zero_x is never written, so the OR leaves the value unchanged
+    // QPN_MAGIC for qpn_decode, as a register (b): qpn_zero_x is never written, so the OR leaves the value unchanged
     constexpr bool MGR = type == GGML_TYPE_Q4_K || type == GGML_TYPE_Q5_K || type == GGML_TYPE_Q6_K;
     const uint32_t mg = MGR ? (QPN_MAGIC | __ldg(&qpn_zero_x[0].x)) : QPN_MAGIC;
 
@@ -1089,7 +1089,7 @@ static __device__ __forceinline__ void qpn_stream_loop(
             }
         }
 
-        // 5 to 8 tokens (ticket 0095): the range scales are read after the products, so they hold no registers through them
+        // 5 to 8 tokens: the range scales are read after the products, so they hold no registers through them
         // (at 80 registers this takes the loop's spills from 2-17 LDL to 0 for Q4_K, IQ4_XS and IQ4_NL, 7 for Q5_K and Q6_K)
         if constexpr (NL == 8) {
 #pragma unroll
@@ -1151,7 +1151,7 @@ static __device__ __forceinline__ void qpn_stream_loop(
 // One block's work on one product (a segment): grid = (row tile groups, P), blockDim = (32, R*S); bx is the block's index
 // among the product's row tile groups. The caller has zeroed *sbad and staged the activations (STAGE), then synchronized.
 // t: the product's token count. It is T (a constant) except in the streaming kernels instantiated at T = 8, which take 5 to 8
-// tokens at run time (ticket 0095): their activations are laid out for t tokens, and lanes of tokens t .. 7 read qpn_zero_x.
+// tokens at run time: their activations are laid out for t tokens, and lanes of tokens t .. 7 read qpn_zero_x.
 template <ggml_type type, int T, bool STAGE, int MODE>
 static __device__ __forceinline__ void qpn_mul_block(const int bx,
         const char * __restrict__ W, const int nsb, const int ntiles, const int S, const int P,
@@ -1184,7 +1184,7 @@ static __device__ __forceinline__ void qpn_mul_block(const int bx,
     const int dofs = type == GGML_TYPE_Q6_K ? NCH*QPN_CHUNK/4 - lane*4 + (r0 >> 2)*2 + (r0 & 1) :
                      type == GGML_TYPE_Q3_K ? NCH*QPN_CHUNK/4 - lane : NCH*QPN_CHUNK/4 - lane*2;
 
-    if constexpr (MODE != 0 || qpn_new<type>()) { // the types of ticket 0096 have only the streaming loop
+    if constexpr (MODE != 0 || qpn_new<type>()) { // the newer types (Q3_K, Q8_0) have only the streaming loop
         qpn_stream_loop<type, T, NL, STAGE>(Wp, step, sbA + sp, sbB, S, active, qpn_xsm, sbA, xh, xs, xsc, nB, r0, c0, dofs, D, bad, t);
     } else {
     uint4 buf[NCH];
@@ -1254,7 +1254,7 @@ static __device__ __forceinline__ void qpn_mul_block(const int bx,
         }
     }
     // The block's result goes out now, to dst or (P > 1) to its slice of ws, and the non-finite fallback below only
-    // overwrites the columns it recomputes, so D is not live across the fallback's call (ticket 0091: a D live across that
+    // overwrites the columns it recomputes, so D is not live across the fallback's call (a D live across that
     // __noinline__ call gets a stack home for the whole kernel, which put it in local memory in every superblock).
     float * wsp = P > 1 ? ws + ((int64_t) tile*P + p)*NL*WARP_SIZE : nullptr;
     if (active && sp == 0) {
@@ -1364,8 +1364,8 @@ static __device__ __forceinline__ void qpn_block_start(const half * __restrict__
 }
 
 // MODE 0: the whole-superblock loop at QPN_MIN_BLOCKS blocks per SM; MODE 2, 3 or 4: qpn_stream_loop, with the launch bounds of
-// MODE blocks of 8 warps per SM (ticket 0086 for Q4_K/Q5_K, ticket 0091 for every type). The streaming kernels at T = 8 take
-// any of 5 to 8 tokens, nt, at run time (ticket 0095); every other kernel takes exactly T.
+// MODE blocks of 8 warps per SM (first for Q4_K/Q5_K, then for every type). The streaming kernels at T = 8 take
+// any of 5 to 8 tokens, nt, at run time; every other kernel takes exactly T.
 template <int T, int MODE> static constexpr __host__ __device__ bool qpn_wide() { return T == 8 && MODE != 0; }
 template <ggml_type type, int T, bool STAGE, int MODE = 0>
 static __global__ void __launch_bounds__(QPN_MAX_WARPS*WARP_SIZE, MODE == 0 ? QPN_MIN_BLOCKS : MODE)
@@ -1383,7 +1383,7 @@ qpn_mul_kernel(const char * __restrict__ W, const int nsb, const int ntiles, con
         qpn_xsm, red, sbad, t);
 }
 
-// Two products of the same input in one launch (ticket 0091, the target design's item 5): blocks [0, nb0) take product 0,
+// Two products of the same input in one launch (the target design's item 5): blocks [0, nb0) take product 0,
 // the rest product 1, each with its own weights, type, rows and output, and the same K, S, R and P = 1. Each product's
 // arithmetic and order are those of its own launch, so the outputs are bit-identical to two launches.
 struct qpn_seg { const char * W; int ntiles; float * dst; int64_t stride_col_dst; };
@@ -1407,7 +1407,7 @@ qpn_mul2_kernel(const qpn_seg g0, const qpn_seg g1, const int nb0, const int nsb
     }
 }
 
-// Three products of the same input in one launch (ticket 0095, W3: the attention input, q + gate, k and v, whose 1024-row k and v
+// Three products of the same input in one launch (W3: the attention input, q + gate, k and v, whose 1024-row k and v
 // alone are 32 row tiles that cannot fill 72 SMs): blocks [0, nb0) take product 0, [nb0, nb0 + nb1) product 1, the rest product 2,
 // each as in its own launch at P = 1, unstaged: q + gate at its own split (S, R), k and v at split-K S12 with blockDim.y/S12 tiles a block.
 template <ggml_type type0, ggml_type type1, ggml_type type2, int T, int MODE>
@@ -1435,7 +1435,7 @@ qpn_mul3_kernel(const qpn_seg g0, const qpn_seg g1, const qpn_seg g2, const int 
     GGML_UNUSED(nb0);
 }
 
-// Ticket S2: the GDN layer's three products of one input in one launch at 5 to 8 tokens: the merged alpha/beta weight ab (Q8_0, 96 rows =
+// the GDN layer's three products of one input in one launch at 5 to 8 tokens: the merged alpha/beta weight ab (Q8_0, 96 rows =
 // 3 row tiles) first, then in-proj (product 0) and z (product 1) exactly as qpn_mul2_kernel runs them. ab's blocks are the pair's shape
 // (S warps a tile, R tiles a block), unstaged, streaming loop at T = 8 with the token count at run time.
 template <ggml_type type0, ggml_type type1, int MODE>
@@ -1462,7 +1462,7 @@ qpn_mul2ab_kernel(const qpn_seg gab, const qpn_seg g0, const qpn_seg g1, const i
     }
 }
 
-// One warp per (256-column slice, token); the arithmetic and the layout are qpn-prep.cuh's (ticket 0091).
+// One warp per (256-column slice, token); the arithmetic and the layout are qpn-prep.cuh's.
 static __global__ void qpn_prep_kernel(const float * __restrict__ x, const int64_t stride_col_x, const int nsb, const int T,
         half * __restrict__ xh, half * __restrict__ xs, float * __restrict__ xsc) {
     const int lane = threadIdx.x % WARP_SIZE;
@@ -1489,7 +1489,7 @@ static int ggml_cuda_qpn_mask() {
 }
 
 // LLAMA_MMVQ_QPN_FORCE: 1 = every enabled type, any other nonzero value = a bitmask of the types to force (as
-// LLAMA_MMVQ_QPN's), e.g. 24 = IQ4_XS and IQ4_NL, the others keeping their routes (ticket 0085)
+// LLAMA_MMVQ_QPN's), e.g. 24 = IQ4_XS and IQ4_NL, the others keeping their routes
 static bool ggml_cuda_qpn_force(const int bit) {
     static const int force = [] {
         const char * e = getenv("LLAMA_MMVQ_QPN_FORCE");
@@ -1514,9 +1514,9 @@ static int ggml_cuda_qpn_type_bit(const ggml_type type) {
 
 // How a product is split (see qpn_mul_kernel): S warps per row tile, R row tiles per block, P blocks per row tile
 // along K, stage: the block's activations in shared memory. Per shape (N rows, K), type-independent: the best of
-// ticket 0078's sweep at 3 and 4 tokens (its runs/t3), and the nearest swept shape for the two it did not sweep.
+// the earlier sweep at 3 and 4 tokens, and the nearest swept shape for the two it did not sweep.
 // Any other shape takes { 4, 2, 1, 1 }, or { 1, 4, 1, 0 } at 65536 rows and more (the output head).
-struct qpn_cfg       { int S, R, P, stage, mode = 0; }; // mode (ticket 0086): 0, or 2/3 = qpn_stream_loop at that many blocks per SM
+struct qpn_cfg       { int S, R, P, stage, mode = 0; }; // mode: 0, or 2/3 = qpn_stream_loop at that many blocks per SM
 struct qpn_shape_cfg { int64_t n, k; qpn_cfg cfg; };
 static const qpn_shape_cfg qpn_cfgs[] = {
     { 10240,  5120, { 2, 2, 1, 0 } }, // GDN qkv
@@ -1529,10 +1529,10 @@ static const qpn_shape_cfg qpn_cfgs[] = {
 };
 
 // Routed shapes, repacked at load by default: each (type, N, K) whose products, prep included, took less time per
-// round in the graph on the repacked weights than on dp4a by more than the drift of that capture (ticket 0081: the
+// round in the graph on the repacked weights than on dp4a by more than the drift of that capture (the
 // Qwen3.8-27B, n-max 3, 4-token verifies, node-level capture of both arms; SM clock 1380 MHz throughout, untouched
 // kernels within 2%). Per round, dp4a -> QPN. Not routed: the 1024-row k/v (+64% to +125%) and every other Q6_K
-// shape (+2% to +18%; ticket 0086 routes four of them, below). Anything else keeps the GGUF layout; LLAMA_MMVQ_QPN_FORCE=1
+// shape (+2% to +18%; four of them are routed below). Anything else keeps the GGUF layout; LLAMA_MMVQ_QPN_FORCE=1
 // repacks every eligible shape.
 struct qpn_route { ggml_type type; int64_t n, k; };
 static const qpn_route qpn_routes[] = {
@@ -1549,7 +1549,7 @@ static const qpn_route qpn_routes[] = {
     { GGML_TYPE_Q4_K,  12288,  5120 }, // attn q + gate     0.54 -> 0.37
     { GGML_TYPE_Q4_K,   5120,  6144 }, // GDN out           0.05 -> 0.04
     { GGML_TYPE_Q6_K, 248320,  5120 }, // output head       1.86 -> 1.72
-    // ticket 0085, the same rule (n-max 3, rejection sampling, the 98,304-token draft vocabulary; LLAMA_MMVQ_QPN=7 against
+    // the same rule (n-max 3, rejection sampling, the 98,304-token draft vocabulary; LLAMA_MMVQ_QPN=7 against
     // LLAMA_MMVQ_QPN_FORCE=24, SM clock 1380 MHz in both, untouched items within 3.5%). Not routed: IQ4_XS ffn down (+7.7%)
     // and attn out (+9.1%), and every IQ4_NL shape (gate/up -2.8%, inside the drift; down +9.0%; GDN qkv +15.2%)
     { GGML_TYPE_IQ4_XS, 17408, 5120 }, // ffn gate, up      4.43 -> 3.44
@@ -1558,7 +1558,7 @@ static const qpn_route qpn_routes[] = {
     { GGML_TYPE_IQ4_XS, 10240, 5120 }, // GDN qkv           0.131 -> 0.123
 };
 
-// ticket 0086, the same rule after the register ring and the shared prep (n-max 3, rejection sampling, the 98,304-token
+// the same rule after the register ring and the shared prep (n-max 3, rejection sampling, the 98,304-token
 // draft vocabulary; defaults against LLAMA_MMVQ_QPN_FORCE=1, SM clock recorded). LLAMA_QPN_ROUTES_0086=0 leaves them
 // out (the routes of ccd942f). Drift 3.25% (k_bin_bcast); per round, dp4a -> QPN with prep. Not routed: Q6_K 5120x6144 (-2.8%,
 // inside the drift), IQ4_XS ffn down (-0.4%) and attn out (+7.7%), IQ4_NL ffn down (+8.9%) and GDN qkv (+15.9%), the 1024-row k/v
@@ -1571,8 +1571,8 @@ static const qpn_route qpn_routes_0086[] = {
     { GGML_TYPE_IQ4_NL, 17408, 5120 }, // ffn gate, up      0.265 -> 0.255
 };
 
-// ticket 0091, the same rule on the finished kernel (n-max 3, rejection sampling, the 98,304-token draft vocabulary; defaults
-// against LLAMA_MMVQ_QPN_FORCE=1, node-level, card 0, drift 1.67% (flash_attn_tile); per round, dp4a -> QPN with prep; runs/n-O, n-F).
+// the same rule on the finished kernel (n-max 3, rejection sampling, the 98,304-token draft vocabulary; defaults
+// against LLAMA_MMVQ_QPN_FORCE=1, node-level, card 0, drift 1.67% (flash_attn_tile); per round, dp4a -> QPN with prep).
 // LLAMA_QPN_ROUTES_0091=0 leaves them out. Not routed: IQ4_XS ffn down (+0.5%) and the 1024-row k/v (+62% to +92%).
 static const qpn_route qpn_routes_0091[] = {
     { GGML_TYPE_Q6_K,   5120,  6144 }, // GDN out, attn out 1.236 -> 0.982 ms
@@ -1581,11 +1581,11 @@ static const qpn_route qpn_routes_0091[] = {
     { GGML_TYPE_IQ4_NL, 10240, 5120 }, // GDN qkv           0.056 -> 0.055 (then grouped with its z)
 };
 
-// ticket 0096, the same rule over the widths in use (the wide-verify design's W5), for the new types' keys: node-level captures at
+// the same rule over the widths in use (the wide-verify design's W5), for the new types' keys: node-level captures at
 // n-max 3 and 7 (4- and 8-token verifies) on poetry, CSV and the code prompt (17.7K deep), each width's pair in one session, on
-// ticket 0095's W1 (85a2465); arm O = LLAMA_QPN_DRAFT=0 LLAMA_QPN_ROUTES_0096=0, arm F = LLAMA_MMVQ_QPN_FORCE=96 LLAMA_QPN_DRAFT_FORCE=1;
-// card 0, gpu.lock exclusive; drift 4.0-5.1% at width 4, 5.7-6.4% at width 8 (flash_attn_tile, or a 0.13 ms IQ4_XS item). Per round,
-// dp4a -> QPN, width 4 / width 8, the same on all three prompts to 1% (tickets/0096 runs/{p,c,k}{3,7}{O,F}, route-target.txt).
+// the first wide-verify kernel; arm O = LLAMA_QPN_DRAFT=0 LLAMA_QPN_ROUTES_0096=0, arm F = LLAMA_MMVQ_QPN_FORCE=96 LLAMA_QPN_DRAFT_FORCE=1;
+// card 0; drift 4.0-5.1% at width 4, 5.7-6.4% at width 8 (flash_attn_tile, or a 0.13 ms IQ4_XS item). Per round,
+// dp4a -> QPN, width 4 / width 8, the same on all three prompts to 1% (measured runs, not shipped).
 // LLAMA_QPN_ROUTES_0096=0 leaves them out. Not routed: Q8_0 1024x5120 (attn v, and one k: +20% / +78%; 32 row tiles, the
 // wide-verify design's W3 grouping is its route).
 static const qpn_route qpn_routes_0096[] = {
@@ -1593,18 +1593,18 @@ static const qpn_route qpn_routes_0096[] = {
     { GGML_TYPE_Q8_0,  5120,  6144 }, // GDN out (1)       0.050 -> 0.046 / 0.070 -> 0.053
 };
 
-static int ggml_cuda_qpn_wide_mask(); // ticket 0095: LLAMA_QPN_WIDE, below
+static int ggml_cuda_qpn_wide_mask(); // LLAMA_QPN_WIDE, below
 
-// ticket S2: LLAMA_QPN_DRAFT_KV (default OFF: no gain measured, -1 us a step; 1 = on): the draft's attention k and v (Q6_K, 1,024 x 5,120) are repacked (qpn_routes_draft) and, at one
+// LLAMA_QPN_DRAFT_KV (default OFF: no gain measured, -1 us a step; 1 = on): the draft's attention k and v (Q6_K, 1,024 x 5,120) are repacked (qpn_routes_draft) and, at one
 // token, run with q as one launch (q + k pair, and the triple with v)
 static bool ggml_cuda_qpn_draft_kv_on() {
     static const bool on = [] { const char * e = getenv("LLAMA_QPN_DRAFT_KV"); return e != nullptr && atoi(e) != 0; }();
     return on;
 }
 
-// ticket S2: LLAMA_QPN_GDN_GROUP (default on; 0 = off): qwen35.cpp puts the GDN layer's in-proj and z (and ab) side by side in the graph, and the
+// LLAMA_QPN_GDN_GROUP (default on; 0 = off): qwen35.cpp puts the GDN layer's in-proj and z (and ab) side by side in the graph, and the
 // sibling planner runs in-proj + z as one qpn_mul2 launch at 3 to 8 tokens (outputs bit-identical to two launches).
-// LLAMA_QPN_GDN_AB (default ON since ticket T2, 0 = off: not bit-identical, KL 0.000021; -0.6 ms per verify graph at 16K and 64K): the merged alpha/beta weight ab (Q8_0, 96 x 5,120) is
+// LLAMA_QPN_GDN_AB (default ON since, 0 = off: not bit-identical, KL 0.000021; -0.6 ms per verify graph at 16K and 64K): the merged alpha/beta weight ab (Q8_0, 96 x 5,120) is
 // repacked and runs in the same launch at 5 to 8 tokens (ggml_cuda_mul_mat_qpn2ab), on the tensor cores instead of dp4a
 static bool ggml_cuda_qpn_gdn_group_on() {
     static const bool on = [] { const char * e = getenv("LLAMA_QPN_GDN_GROUP"); return e == nullptr || atoi(e) != 0; }();
@@ -1615,10 +1615,10 @@ static bool ggml_cuda_qpn_gdn_ab_on() {
     return on;
 }
 
-// ticket 0095 (W5), the same rule over the widths in use: a key routes if it is no slower at width 4 within the capture's drift and faster
+// W5, the same rule over the widths in use: a key routes if it is no slower at width 4 within the capture's drift and faster
 // at width 8, on poetry, CSV and code (n-max 3 and 7, T=0, generated tokens 100-220, node-level, card 0; defaults against
-// LLAMA_MMVQ_QPN_FORCE=1 in one session, drift at most 4.75% (flash_attn_tile); per round, dp4a -> QPN with prep; runs/n3O, n3F, n7O, n7F).
-// LLAMA_QPN_ROUTES_0095=0 leaves them out. Every earlier route still wins against dp4a at both widths (LLAMA_MMVQ_QPN=0; runs/n3Z, n7Z).
+// LLAMA_MMVQ_QPN_FORCE=1 in one session, drift at most 4.75% (flash_attn_tile); per round, dp4a -> QPN with prep).
+// LLAMA_QPN_ROUTES_0095=0 leaves them out. Every earlier route still wins against dp4a at both widths (LLAMA_MMVQ_QPN=0).
 static const qpn_route qpn_routes_0095[] = {
     { GGML_TYPE_IQ4_XS, 5120, 17408 }, // ffn down          1.342 -> 1.300 ms at width 4, 2.667 -> 1.478 at width 8 (poetry; CSV, code within 0.3%)
     // the 1024-row attention k, v: only in one launch with their q + gate (ggml_cuda_mul_mat_qpn3, or the pair when v is Q8_0), so
@@ -1669,7 +1669,7 @@ static const qpn_route * ggml_cuda_qpn_find_route(const ggml_type type, const in
             }
         }
     }
-    // ticket S2: the merged GDN alpha/beta weight, whose only reader is the 8-row verify's grouped launch (5 to 8 tokens) or, alone, the
+    // the merged GDN alpha/beta weight, whose only reader is the 8-row verify's grouped launch (5 to 8 tokens) or, alone, the
     // QPN kernel at any other width (build_layer_attn_linear reads it through ab at every token count once it is repacked)
     if (type == GGML_TYPE_Q8_0 && n == 96 && k == 5120 && ggml_cuda_qpn_gdn_ab_on()) {
         static const qpn_route r_ab = { GGML_TYPE_Q8_0, 96, 5120 };
@@ -1678,14 +1678,14 @@ static const qpn_route * ggml_cuda_qpn_find_route(const ggml_type type, const in
     return nullptr;
 }
 
-// Per type, at 1 to 4 tokens. LLAMA_QPN_STREAM: bitmask, default 15 (ticket 0091: the target design, tickets/exp27b-qpn-target-
-// design.md, supersedes the operator's freeze after ticket 0086's merge point B). 1 = ffn gate/up (Q4_K/Q5_K), streamed with
+// Per type, at 1 to 4 tokens. LLAMA_QPN_STREAM: bitmask, default 15 (the target design; it supersedes the earlier setting
+// that kept the streaming loop off by default). 1 = ffn gate/up (Q4_K/Q5_K), streamed with
 // staged activations at the same S (outputs bit-identical); 2 = GDN qkv (Q4_K/Q5_K) at S = 4 instead of 2 (a different split-K
-// summation order; ticket 0086 took it through the accuracy gate); 4 (ticket 0091) = qpn_stream_loop, 80 registers, for every
-// other key at 1 to 4 tokens, at the key's split (outputs bit-identical); 8 (ticket 0091) = the splits of qpn_cfgs_0091 (new
-// summation orders, through the accuracy gate), which then replace bits 1 and 2. 0 = ticket 0086's merge point A; 5 = every
+// summation order; it went through the accuracy gate); 4 = qpn_stream_loop, 80 registers, for every
+// other key at 1 to 4 tokens, at the key's split (outputs bit-identical); 8 = the splits of qpn_cfgs_0091 (new
+// summation orders, through the accuracy gate), which then replace bits 1 and 2. 0 = the whole-superblock kernels only; 5 = every
 // type on the streaming loop at merge point A's splits, bit-identical to it. Microbenchmark on the
-// real tensors, card 1, SM 1380 MHz, T = 4 (ticket 0086 runs/h2), us: Q5_K gate/up 77.4 -> 73.1, Q4_K 63.8 -> 59.0; GDN qkv
+// real tensors, card 1, SM 1380 MHz, T = 4 us: Q5_K gate/up 77.4 -> 73.1, Q4_K 63.8 -> 59.0; GDN qkv
 // Q5_K 52.7 -> 48.1, Q4_K 47.0 -> 39.2.
 struct qpn_type_cfg { ggml_type type; int64_t n, k; int bit; qpn_cfg cfg; };
 static const qpn_type_cfg qpn_type_cfgs[] = {
@@ -1710,12 +1710,12 @@ static const qpn_cfg * ggml_cuda_qpn_find_type_cfg(const ggml_type type, const i
     return nullptr;
 }
 
-// ticket 0091 (LLAMA_QPN_STREAM bit 4, default on): at 1 to 4 tokens, every type on qpn_stream_loop (80 registers, 24 warps per SM)
-// with the split that gives it the warps: microbenchmark on the real tensors at 4 tokens, card 1, SM clock recorded (runs/sw1),
+// (LLAMA_QPN_STREAM bit 4, default on): at 1 to 4 tokens, every type on qpn_stream_loop (80 registers, 24 warps per SM)
+// with the split that gives it the warps: microbenchmark on the real tensors at 4 tokens, card 1, SM clock recorded,
 // us against merge point A's whole-superblock kernel. type GGML_TYPE_COUNT = any type.
 struct qpn_cfg_0091 { ggml_type type; int64_t n, k; qpn_cfg cfg; };
 static const qpn_cfg_0091 qpn_cfgs_0091[] = {
-    // ticket 0096's types, the best of a sweep at 1 and 4 tokens (card 0, SM clock recorded; runs/t1), us against dp4a:
+    // the newer types, the best of a sweep at 1 and 4 tokens (card 0, SM clock recorded), us against dp4a:
     { GGML_TYPE_Q3_K,  98304,  5120, { 2, 4, 1, 1, 3 } }, // the draft's head subset: 1 token 564.1 -> 329.4, 4 tokens 856.0 -> 353.0
     { GGML_TYPE_Q8_0,   1024,  5120, { 8, 1, 4, 0, 3 } }, // attn v, k: 1 token 7.4 -> 12.6, 4 tokens 10.9 -> 13.2 (32 row tiles)
     { GGML_TYPE_Q8_0,   5120,  6144, { 8, 1, 1, 0, 3 } }, // GDN out: 1 token 38.8 -> 40.7, 4 tokens 44.1 -> 38.4
@@ -1738,12 +1738,12 @@ static const qpn_cfg * ggml_cuda_qpn_find_cfg_0091(const ggml_type type, const i
     return nullptr;
 }
 
-// ticket 0095 (W2; LLAMA_QPN_WIDE bit 2, default on): at 5 to 8 tokens, the splits of the streaming kernel at T = 8 per shape and type
+// (W2; LLAMA_QPN_WIDE bit 2, default on): at 5 to 8 tokens, the splits of the streaming kernel at T = 8 per shape and type
 // (type GGML_TYPE_COUNT = any type), from a sweep of S, R, P, staging and blocks per SM (mode) on the real tensors at 8 tokens, checked at
-// 5 (runs/w2), card 1, SM clock recorded; us at 8 tokens against W1's default (the streaming kernel at 24 warps per SM at ticket 0078's
+// 5, card 1, SM clock recorded; us at 8 tokens against W1's default (the streaming kernel at 24 warps per SM at the earlier
 // split). New summation orders, through the accuracy gate.
 static const qpn_cfg_0091 qpn_cfgs_0095[] = {
-    { GGML_TYPE_Q3_K,   17408,  5120, { 2, 4, 1, 0, 0 } }, // ffn gate/up, Q3_K (ticket 0096's type): the whole-superblock kernel, 68.6 (streamed 74.6 at 16 warps per SM, 82.4 at 24)
+    { GGML_TYPE_Q3_K,   17408,  5120, { 2, 4, 1, 0, 0 } }, // ffn gate/up, Q3_K (one of the newer types): the whole-superblock kernel, 68.6 (streamed 74.6 at 16 warps per SM, 82.4 at 24)
     { GGML_TYPE_COUNT,  17408,  5120, { 2, 4, 1, 0, 2 } }, // ffn gate/up, 16 warps per SM: Q5_K 83.6 -> 75.2, Q6_K 94.6 -> 86.8, Q4_K 70.6 -> 62.0, IQ4_NL 74.5 -> 70.2, IQ4_XS 70.8 -> 67.6
     { GGML_TYPE_COUNT,  10240,  5120, { 4, 1, 1, 0, 3 } }, // GDN qkv: Q5_K 67.5 -> 55.3, Q6_K 70.0 -> 60.6, Q4_K 59.6 -> 41.7, IQ4_NL 63.3 -> 46.2, IQ4_XS 57.9 -> 47.8
     { GGML_TYPE_IQ4_XS, 12288,  5120, { 2, 2, 1, 0, 0 } }, // attn q + gate, IQ4_XS: the whole-superblock kernel, 51.7 (streamed at best 54.4; at 5 tokens 51.4 against 54.1)
@@ -1753,7 +1753,7 @@ static const qpn_cfg_0091 qpn_cfgs_0095[] = {
     { GGML_TYPE_Q4_K,    5120, 17408, { 8, 1, 1, 0, 3 } }, //           Q4_K 99.3 -> 74.4 (16 warps per SM: 78.1)
     { GGML_TYPE_COUNT,   5120, 17408, { 4, 1, 1, 0, 2 } }, //           Q5_K 112.4 -> 94.9, Q6_K 120.6 -> 97.7
     { GGML_TYPE_COUNT,   6144,  5120, { 4, 1, 1, 0, 2 } }, // GDN z: Q5_K 37.3 -> 32.0, Q6_K 40.0 -> 33.6, Q4_K 32.6 -> 26.7, IQ4_XS 31.8 -> 29.6
-    { GGML_TYPE_Q8_0,    5120,  6144, { 4, 1, 1, 0, 0 } }, // GDN out, Q8_0 (ticket 0096's type): the whole-superblock kernel, 38.6 (streamed at best 39.1)
+    { GGML_TYPE_Q8_0,    5120,  6144, { 4, 1, 1, 0, 0 } }, // GDN out, Q8_0 (one of the newer types): the whole-superblock kernel, 38.6 (streamed at best 39.1)
     { GGML_TYPE_IQ4_XS,  5120,  6144, { 4, 1, 1, 0, 0 } }, // GDN out, attn out, IQ4_XS: the whole-superblock kernel, 32.9 (streamed at best 33.9; at 5 tokens 32.7 against 33.8)
     { GGML_TYPE_COUNT,   5120,  6144, { 4, 1, 1, 0, 2 } }, //                    Q5_K 42.7 -> 36.3, Q6_K 44.3 -> 36.4, Q4_K 37.4 -> 30.2
     { GGML_TYPE_COUNT, 248320,  5120, { 4, 2, 1, 0, 2 } }, // the output head: Q6_K 1375.8 -> 1268.7 (at 5 tokens 1361.5 -> 1216.5)
@@ -1768,7 +1768,7 @@ static const qpn_cfg * ggml_cuda_qpn_find_cfg_0095(const ggml_type type, const i
     return nullptr;
 }
 
-// ticket 0101: the DFlash2 draft's shapes at 5 to 8 tokens (it runs them at 8), taken from the nearest shape of qpn_cfgs_0095 (no
+// the DFlash2 draft's shapes at 5 to 8 tokens (it runs them at 8), taken from the nearest shape of qpn_cfgs_0095 (no
 // sweep): attn q 4096x5120 as GDN z 6144x5120, attn out 5120x4096 as 5120x6144, fc 5120x25600 as the Q4_K ffn down, and the grids of
 // 40 row tiles or fewer (the conv projections 1280x5120, k/v 1024x5120, selector_hidden 256x5120) split along K as the Q8_0 1024-row k/v
 // at 1-4 tokens; the Q6_K head subset as the output head. Only consulted when qpn_cfgs_0095 has no entry.
@@ -1800,11 +1800,11 @@ static const qpn_cfg * ggml_cuda_qpn_find_cfg(const int64_t n, const int64_t k) 
     return nullptr;
 }
 
-// ticket 0095, the wide verify (tickets/exp27b-wide-verify-design.md). LLAMA_QPN_WIDE: bitmask, default 15. 2 = the split table
+// the wide verify. LLAMA_QPN_WIDE: bitmask, default 15. 2 = the split table
 // qpn_cfgs_0095 at 5 to 8 tokens (W2; a new summation order); 4 = pairs at 5 to 8 tokens (W3); 8 = the attention input's q + gate,
 // k and v as one launch (W3, ggml_cuda_mul_mat_qpn3) at 4 to 8 tokens. 1 = products of 5 to
 // 8 tokens on qpn_stream_loop (the kernel at T = 8 with the token count at run time; W1), at their split (outputs bit-identical
-// to the whole-superblock kernel at the same split), unstaged, at QPN_WIDE_MODE blocks of 8 warps per SM. 0 = ticket 0091's
+// to the whole-superblock kernel at the same split), unstaged, at QPN_WIDE_MODE blocks of 8 warps per SM. 0 = the earlier
 // whole-superblock kernel at 5 to 8 tokens.
 #define QPN_WIDE_MODE 3
 static int ggml_cuda_qpn_wide_mask() {
@@ -1817,7 +1817,7 @@ static size_t ggml_cuda_qpn_stage_bytes(const int nsb, const int P, const int T)
     return (size_t) ((nsb + P - 1)/P)*32*T*sizeof(uint4);
 }
 static constexpr size_t QPN_STAGE_MAX = 40*1024;
-static constexpr size_t QPN_STAGE_MAX_WIDE = 36*1024; // at 5 to 8 tokens the reduction buffer is 8 KiB, not 4 (ticket 0095)
+static constexpr size_t QPN_STAGE_MAX_WIDE = 36*1024; // at 5 to 8 tokens the reduction buffer is 8 KiB, not 4
 
 static qpn_cfg ggml_cuda_qpn_config(const ggml_type type, const int64_t n, const int64_t k, const int T) {
     const int nsb = (int) (k/QK_K);
@@ -1825,7 +1825,7 @@ static qpn_cfg ggml_cuda_qpn_config(const ggml_type type, const int64_t n, const
     const qpn_cfg * c91 = T <= 4 && (ggml_cuda_qpn_stream_mask() & 8) ? ggml_cuda_qpn_find_cfg_0091(type, n, k) : nullptr;
     const qpn_cfg * c95 = T > 4 && (ggml_cuda_qpn_wide_mask() & 2) ? ggml_cuda_qpn_find_cfg_0095(type, n, k) : nullptr;
     if (c95 == nullptr && T > 4 && (ggml_cuda_qpn_wide_mask() & 2)) {
-        c95 = ggml_cuda_qpn_find_cfg_dflash(type, n, k); // ticket 0101
+        c95 = ggml_cuda_qpn_find_cfg_dflash(type, n, k);
     }
     if (c95) {
         c = *c95;
@@ -1844,9 +1844,9 @@ static qpn_cfg ggml_cuda_qpn_config(const ggml_type type, const int64_t n, const
         sscanf(ecfg, "%d,%d,%d,%d,%d", &c.S, &c.R, &c.P, &c.stage, &c.mode);
     }
     if (T <= 4 && c.mode == 0 && (ggml_cuda_qpn_stream_mask() & 4) && ecfg == nullptr) {
-        c.mode = 3; // ticket 0091: the streaming loop for every other key, at its split (bit-identical)
+        c.mode = 3; // the streaming loop for every other key, at its split (bit-identical)
     }
-    if (T > 4 && ecfg == nullptr) { // ticket 0095 (W1): 5 to 8 tokens streamed, unstaged, at the key's split (W2: the table's split and mode)
+    if (T > 4 && ecfg == nullptr) { // 5 to 8 tokens streamed, unstaged, at the key's split (W2: the table's split and mode)
         if (!(ggml_cuda_qpn_wide_mask() & 1)) {
             c.mode = 0;
         } else if (c95 == nullptr) {
@@ -1886,7 +1886,7 @@ bool ggml_cuda_qpn_eligible(const ggml_tensor * t, const int cc) {
     return ggml_cuda_qpn_force(ggml_cuda_qpn_type_bit(t->type)) || ggml_cuda_qpn_find_route(t->type, t->ne[1], t->ne[0]) != nullptr;
 }
 
-// ticket 0096: a draft model's weights (its MTP layer, and its LM head subset, which llama_model::set_head_subset makes as a
+// a draft model's weights (its MTP layer, and its LM head subset, which llama_model::set_head_subset makes as a
 // tensor of its own) have their own routes, because the draft runs them at 1 token per draft step and at the verify width only
 // in the catch-up. LLAMA_QPN_DRAFT=0 repacks none of them; LLAMA_QPN_DRAFT_FORCE: 1 = every enabled type, any other nonzero
 // value = a bitmask of types (as LLAMA_MMVQ_QPN_FORCE's), for study. The routes: the same rule over the draft steps (1 token)
@@ -1916,17 +1916,17 @@ bool ggml_cuda_qpn_eligible_draft(const ggml_tensor * t, const int cc) {
             return true;
         }
     }
-    // ticket S2: k and v alone lose to dp4a (+126% to +137%, above); in the launch with q they win (ggml_cuda_qpn_draft3_ok)
+    // k and v alone lose to dp4a (+126% to +137%, above); in the launch with q they win (ggml_cuda_qpn_draft3_ok)
     return t->type == GGML_TYPE_Q6_K && t->ne[1] == 1024 && t->ne[0] == 5120 && ggml_cuda_qpn_draft_kv_on();
 }
 
-// ticket 0101: a DFlash2 draft's weights (its five layers' attn q, k, v, out, ffn gate, up, down, the two dynamic-conv projections,
+// a DFlash2 draft's weights (its five layers' attn q, k, v, out, ffn gate, up, down, the two dynamic-conv projections,
 // fc, selector_hidden, and its LM head subset) have their own routes, because the draft runs all of them at 8 rows (the block, and the
 // injection of the verify's 8 rows) and none of its attention shapes is a target shape. Before it, the trunk went through the target's
 // table, so only the shapes that equal a target key (ffn gate/up, down, and the 1024-row k/v) took QPN. LLAMA_QPN_DFLASH=0 repacks
 // none of them; LLAMA_QPN_DFLASH_FORCE: 1 = every enabled type, any other nonzero value = a bitmask of types, for study. The routes:
 // in-graph timing at 8 rows, node-level captures of the draft pass and the injection (poetry at T=0, generated tokens 100-220, card 1,
-// the same text in every arm; tickets/0101 runs/o1, f1, d1, d2, diag/prod101.py). Per shape, dp4a -> QPN with prep, us per round (the
+// the same text in every arm). Per shape, dp4a -> QPN with prep, us per round (the
 // five layers): q 326 -> 176, k + v 467 -> 389 (draft pass + injection), out 346 -> 159, gate + up 2295 -> 672, down 1214 -> 487, fc 355
 // -> 118, the head 1702 -> 448; the conv projections 337 -> 333 and selector_hidden 18 -> 28 are even or worse alone, and the two Q6_K
 // v 44 -> 67. But the products interact in the graph: with only the winning shapes routed (d1) the Q4_K k took 28 us a layer against
@@ -2016,7 +2016,7 @@ bool ggml_cuda_qpn_repack(ggml_tensor * t, const int device) {
     return true;
 }
 
-// the inverse of the repack (ticket 0082): the GGUF bytes of tiles [0, ntiles) of this pass, from the repacked W
+// the inverse of the repack: the GGUF bytes of tiles [0, ntiles) of this pass, from the repacked W
 template <ggml_type type>
 static __global__ void qpn_unrepack_kernel(const char * __restrict__ W, char * __restrict__ dst, const int nsb) {
     typedef typename qpn_t<type>::block block;
@@ -2113,8 +2113,8 @@ static void ggml_cuda_qpn_launch_m(const int device, const dim3 grid, const dim3
 }
 
 // mode 0: the whole-superblock loop at QPN_MIN_BLOCKS blocks per SM, one kernel per T; 2, 3, 4: qpn_stream_loop at that many
-// blocks of 8 warps per SM (ticket 0086 for Q4_K/Q5_K, ticket 0091 for every type), one kernel per T at 1 to 4 tokens and
-// one kernel at T = 8 for 5 to 8 tokens (ticket 0095)
+// blocks of 8 warps per SM (first for Q4_K/Q5_K, then for every type), one kernel per T at 1 to 4 tokens and
+// one kernel at T = 8 for 5 to 8 tokens
 template <ggml_type type, int T>
 static void ggml_cuda_qpn_launch_t(const bool stage, const int mode, const dim3 grid, const dim3 block, const size_t smem, cudaStream_t stream, const qpn_args & a) {
     int device;
@@ -2202,7 +2202,7 @@ void ggml_cuda_mul_mat_qpn(ggml_backend_cuda_context & ctx, const ggml_tensor * 
         size_t sz_xh, sz_xs, sz_xsc;
         ggml_cuda_qpn_prep_sizes(K, T, sz_xh, sz_xs, sz_xsc);
         const size_t sz_ws  = c.P > 1 ? GGML_PAD((size_t) ntiles*c.P*NL*WARP_SIZE*sizeof(float), 256) : 0;
-        // ticket 0086: a single pass may share its prepared input with the other products reading src1 (it then
+        // a single pass may share its prepared input with the other products reading src1 (it then
         // always holds the per-32 sums, which only the K-quants with mins read)
         bool   ready  = false;
         char * shared = ncols <= 8 ? ggml_cuda_qpn_share_buffer(src0, src1, sz_xh + sz_xs + sz_xsc, stream, &ready) : nullptr;
@@ -2232,7 +2232,7 @@ void ggml_cuda_mul_mat_qpn(ggml_backend_cuda_context & ctx, const ggml_tensor * 
                 shared ? (half *) (prep + sz_xh) : a.xs, a.xsc);
             CUDA_CHECK(cudaGetLastError());
         }
-        // ticket 0096, a check (off by default): LLAMA_QPN_FALLBACK_ALL marks every slice non-finite, so every column goes
+        // a check (off by default): LLAMA_QPN_FALLBACK_ALL marks every slice non-finite, so every column goes
         // through the fp32 fallback (qpn_fallback), whose dequantization is then compared with ggml's by the caller
         static const bool fallback_all = getenv("LLAMA_QPN_FALLBACK_ALL") != nullptr;
         if (fallback_all) {
@@ -2254,23 +2254,23 @@ void ggml_cuda_mul_mat_qpn(ggml_backend_cuda_context & ctx, const ggml_tensor * 
 }
 
 // ------------------------------------------------------------------------------------------------------------------
-// two products of one input in one launch (ticket 0091, the target design's item 5; ggml-cuda.cu plans the pairs)
+// two products of one input in one launch (the target design's item 5; ggml-cuda.cu plans the pairs)
 
 static constexpr int qpn_type_idx(const ggml_type t) {
     return t == GGML_TYPE_Q4_K ? 0 : t == GGML_TYPE_Q5_K ? 1 : t == GGML_TYPE_Q6_K ? 2 : t == GGML_TYPE_IQ4_XS ? 3 : t == GGML_TYPE_IQ4_NL ? 4 :
-           t == GGML_TYPE_Q3_K ? 5 : -1; // ticket 0096: Q3_K (the target's Q3_K ffn gate/up pair with IQ4_XS); Q8_0 is in no configured pair
+           t == GGML_TYPE_Q3_K ? 5 : -1; // Q3_K (the target's Q3_K ffn gate/up pair with IQ4_XS); Q8_0 is in no configured pair
 }
 
-// the pair's split, shared by both products (one block shape): S, R and staging; P = 1. Per (N0 + N1, K), the best of this
-// ticket's sweep (runs/grp) at 4 tokens; LLAMA_QPN_GROUP_CFG="S,R,stage" overrides it, for the sweep (at 5 to 8 tokens "S,R,mode").
+// the pair's split, shared by both products (one block shape): S, R and staging; P = 1. Per (N0 + N1, K), the best of a
+// sweep at 4 tokens; LLAMA_QPN_GROUP_CFG="S,R,stage" overrides it, for the sweep (at 5 to 8 tokens "S,R,mode").
 struct qpn_group_shape_cfg { int64_t n0, n1, k; int S, R, stage; };
 static const qpn_group_shape_cfg qpn_group_cfgs[] = {
-    { 12288,  1024, 5120, 4, 2, 0 }, // ticket 0095: attn q + gate with k, when v is not repacked (q alone: 4,2, unstaged)
+    { 12288,  1024, 5120, 4, 2, 0 }, // attn q + gate with k, when v is not repacked (q alone: 4,2, unstaged)
     { 10240,  6144, 5120, 3, 2, 0 }, // GDN qkv + z: Q5_K 81.7 -> 79.7 us (staged 2,4: 77.0), Q4_K 65.9 -> 61.6 (staged 63.4); no staging
     { 17408, 17408, 5120, 2, 4, 1 }, // ffn up + gate, staged as each alone (so bit-identical to two launches): Q5_K + Q4_K 137.4 -> 132.2
 };                                   //   (unstaged at 3,2: 134.3, so staging still wins)
 
-// ticket 0095 (W3): at 5 to 8 tokens, the split of each product alone at those widths (qpn_cfgs_0095), so a pair is bit-identical to
+// (W3): at 5 to 8 tokens, the split of each product alone at those widths (qpn_cfgs_0095), so a pair is bit-identical to
 // two launches; stage = 0 always; mode = blocks of 8 warps per SM (2: 128 registers, 3: 80), as the products alone
 static const qpn_group_shape_cfg qpn_group_cfgs_0095[] = {
     { 10240,  6144, 5120, 4, 1, 2 }, // GDN qkv + z (alone: 4,1 at mode 3 and 4,1 at mode 2)
@@ -2301,7 +2301,7 @@ static bool ggml_cuda_qpn_group_config(const int64_t n0, const int64_t n1, const
     return true;
 }
 
-// ticket S2: the draft step's (one token) q + gate with k, or with v: Q6_K, 12,288 and 1,024 rows
+// the draft step's (one token) q + gate with k, or with v: Q6_K, 12,288 and 1,024 rows
 static bool ggml_cuda_qpn_draft_pair_ok(const ggml_tensor * a, const ggml_tensor * b, const ggml_tensor * src1) {
     const ggml_tensor * q = a->ne[1] > b->ne[1] ? a : b, * kv = a->ne[1] > b->ne[1] ? b : a;
     return src1->ne[1] == 1 && ggml_cuda_qpn_draft_kv_on() && (ggml_cuda_qpn_wide_mask() & 8) && q->type == GGML_TYPE_Q6_K && kv->type == GGML_TYPE_Q6_K &&
@@ -2312,7 +2312,7 @@ bool ggml_cuda_qpn_group_ok(const ggml_tensor * a, const ggml_tensor * b, const 
     static const bool enabled = [] { const char * e = getenv("LLAMA_QPN_GROUP"); return e == nullptr || atoi(e) != 0; }();
     const int T = (int) src1->ne[1];
     int S, R, stage;
-    // ticket S2: the GDN pair (in-proj + z) only at 5 to 8 tokens, where both products' own split is the pair's (S = 4, R = 1): at 3 and 4 tokens the
+    // the GDN pair (in-proj + z) only at 5 to 8 tokens, where both products' own split is the pair's (S = 4, R = 1): at 3 and 4 tokens the
     // pair's split (3, 2) is not either product's own (4, 1 and 8, 1), so it would not be bit-identical to two launches
     if (T < 5 && ((a->ne[1] == 10240 && b->ne[1] == 6144) || (a->ne[1] == 6144 && b->ne[1] == 10240))) {
         return false;
@@ -2343,7 +2343,7 @@ static void ggml_cuda_qpn2_launch_tt(const int T, const int stage, const dim3 gr
         const qpn_seg & g0, const qpn_seg & g1, const int nb0, const int nsb, const int S, const half * xh, const half * xs, const float * xsc,
         const float * x, const int64_t sx) {
     if constexpr (qpn_type_idx(t0) <= qpn_type_idx(t1)) {
-        if (T == 1) { // ticket S2: only the draft's Q6_K q + k or v (ggml_cuda_qpn_draft_pair_ok), unstaged
+        if (T == 1) { // only the draft's Q6_K q + k or v (ggml_cuda_qpn_draft_pair_ok), unstaged
             if constexpr (t0 == GGML_TYPE_Q6_K && t1 == GGML_TYPE_Q6_K) {
                 ggml_cuda_qpn2_launch_k<t0, t1, 1, false>(grid, block, smem, stream, g0, g1, nb0, nsb, S, xh, xs, xsc, x, sx, T);
             } else {
@@ -2355,7 +2355,7 @@ static void ggml_cuda_qpn2_launch_tt(const int T, const int stage, const dim3 gr
         } else if (T == 4) {
             stage ? ggml_cuda_qpn2_launch_k<t0, t1, 4, true >(grid, block, smem, stream, g0, g1, nb0, nsb, S, xh, xs, xsc, x, sx, T)
                   : ggml_cuda_qpn2_launch_k<t0, t1, 4, false>(grid, block, smem, stream, g0, g1, nb0, nsb, S, xh, xs, xsc, x, sx, T);
-        } else { // ticket 0095 (W3): 5 to 8 tokens, one kernel at T = 8, unstaged, at 2 or 3 blocks of 8 warps per SM (stage holds it)
+        } else { // 5 to 8 tokens, one kernel at T = 8, unstaged, at 2 or 3 blocks of 8 warps per SM (stage holds it)
             stage == 2 ? ggml_cuda_qpn2_launch_k<t0, t1, 8, false, 2>(grid, block, smem, stream, g0, g1, nb0, nsb, S, xh, xs, xsc, x, sx, T)
                        : ggml_cuda_qpn2_launch_k<t0, t1, 8, false, 3>(grid, block, smem, stream, g0, g1, nb0, nsb, S, xh, xs, xsc, x, sx, T);
         }
@@ -2441,9 +2441,9 @@ void ggml_cuda_mul_mat_qpn2(ggml_backend_cuda_context & ctx, const ggml_tensor *
 }
 
 // ------------------------------------------------------------------------------------------------------------------
-// three products of one input in one launch (ticket 0095, W3: the attention input q + gate, k, v; ggml-cuda.cu plans them)
+// three products of one input in one launch (W3: the attention input q + gate, k, v; ggml-cuda.cu plans them)
 
-// the instantiated types: product 0 (q + gate) Q4_K, Q5_K or IQ4_XS; products 1 and 2 (k, v) Q4_K, Q5_K, Q6_K or Q8_0 (ticket 0096's
+// the instantiated types: product 0 (q + gate) Q4_K, Q5_K or IQ4_XS; products 1 and 2 (k, v) Q4_K, Q5_K, Q6_K or Q8_0 (the newer types'
 // type), in the order of qpn3_idx
 static constexpr bool qpn3_t0_ok(const ggml_type t) { return t == GGML_TYPE_Q4_K || t == GGML_TYPE_Q5_K || t == GGML_TYPE_IQ4_XS; }
 static constexpr int  qpn3_idx(const ggml_type t) {
@@ -2457,9 +2457,9 @@ static constexpr bool qpn3_t1_ok(const ggml_type t) { return qpn3_idx(t) >= 0; }
 struct qpn_group3_cfg { int64_t n0, n1, n2, k; int S, R, S12, mode; };
 static const qpn_group3_cfg qpn_group3_cfgs[] = {
     { 12288, 1024, 1024, 5120, 4, 2, 8, 3 }, // k, v at split-K 8, one tile a block, first: per layer, against q alone with k and v on dp4a,
-};                                           // 79.5 -> 68.4 us at 4 tokens, 99.2 -> 83.5 at 8 (S12 = 4: 81.9, 89.4; 2: 76.4, 85.7; runs/w3tri)
+};                                           // 79.5 -> 68.4 us at 4 tokens, 99.2 -> 83.5 at 8 (S12 = 4: 81.9, 89.4; 2: 76.4, 85.7)
 
-// ticket S2: the draft step's (one token) q + gate, k, v, all Q6_K: q's split (4, 2), k and v at split-K 8 (qpn_group3_cfgs)
+// the draft step's (one token) q + gate, k, v, all Q6_K: q's split (4, 2), k and v at split-K 8 (qpn_group3_cfgs)
 static bool ggml_cuda_qpn_draft3_ok(const ggml_tensor * a, const ggml_tensor * b, const ggml_tensor * c, const ggml_tensor * src1) {
     static const bool enabled = [] { const char * e = getenv("LLAMA_QPN_GROUP"); return e == nullptr || atoi(e) != 0; }();
     if (!enabled || src1->ne[1] != 1 || !ggml_cuda_qpn_draft_kv_on() || !(ggml_cuda_qpn_wide_mask() & 8) ||
@@ -2475,7 +2475,7 @@ static bool ggml_cuda_qpn_draft3_ok(const ggml_tensor * a, const ggml_tensor * b
     return true;
 }
 
-// ticket S2: the GDN layer's in-proj (a), z (b) and merged alpha/beta (c, Q8_0, 96 rows), 5 to 8 tokens, on the pair's configured shape
+// the GDN layer's in-proj (a), z (b) and merged alpha/beta (c, Q8_0, 96 rows), 5 to 8 tokens, on the pair's configured shape
 static constexpr bool qpn_gdn_type_ok(const ggml_type t) {
     return t == GGML_TYPE_Q4_K || t == GGML_TYPE_Q5_K || t == GGML_TYPE_Q6_K || t == GGML_TYPE_IQ4_XS || t == GGML_TYPE_IQ4_NL;
 }
@@ -2566,7 +2566,7 @@ static void ggml_cuda_mul_mat_qpn2ab(ggml_backend_cuda_context & ctx, const ggml
 
 void ggml_cuda_mul_mat_qpn3(ggml_backend_cuda_context & ctx, const ggml_tensor * const src0s[3], const ggml_tensor * src1, ggml_tensor * const dsts[3]) {
     GGML_ASSERT(ggml_cuda_qpn_group3_ok(src0s[0], src0s[1], src0s[2], src1));
-    if (ggml_cuda_qpn_gdn3_ok(src0s[0], src0s[1], src0s[2], src1)) { // ticket S2
+    if (ggml_cuda_qpn_gdn3_ok(src0s[0], src0s[1], src0s[2], src1)) { //
         ggml_cuda_mul_mat_qpn2ab(ctx, src0s, src1, dsts);
         return;
     }
@@ -2626,7 +2626,7 @@ void ggml_cuda_mul_mat_qpn3(ggml_backend_cuda_context & ctx, const ggml_tensor *
     }
     const half * xsp = mins ? xs : nullptr;
     switch (w[0]->type) {
-        case GGML_TYPE_Q6_K: // ticket S2: the draft step's Q6_K triple (ggml_cuda_qpn_draft3_ok), one token
+        case GGML_TYPE_Q6_K: // the draft step's Q6_K triple (ggml_cuda_qpn_draft3_ok), one token
             qpn_mul3_kernel<GGML_TYPE_Q6_K, GGML_TYPE_Q6_K, GGML_TYPE_Q6_K, 1, 3><<<grid, block, 0, stream>>>(g[0], g[1], g[2], nb[0], nb[1], nb[2], nsb, S, S12, xh, xsp, xsc, x, sx, T);
             break;
         case GGML_TYPE_Q4_K:   ggml_cuda_qpn3_launch_t<GGML_TYPE_Q4_K  >(w[1]->type, w[2]->type, T, grid, block, stream, g[0], g[1], g[2], nb[0], nb[1], nb[2], nsb, S, S12, xh, xsp, xsc, x, sx); break;
@@ -2637,7 +2637,7 @@ void ggml_cuda_mul_mat_qpn3(ggml_backend_cuda_context & ctx, const ggml_tensor *
     CUDA_CHECK(cudaGetLastError());
 }
 
-// ticket S2: the GDN layer's in-proj + z + merged alpha/beta as one launch (ggml_cuda_qpn_gdn3_ok), 5 to 8 tokens, the pair's split and mode
+// the GDN layer's in-proj + z + merged alpha/beta as one launch (ggml_cuda_qpn_gdn3_ok), 5 to 8 tokens, the pair's split and mode
 template <ggml_type t0, ggml_type t1>
 static void ggml_cuda_qpn2ab_launch_tt(const dim3 grid, const dim3 block, cudaStream_t stream, const qpn_seg & gab, const qpn_seg & g0, const qpn_seg & g1,
         const int nbab, const int nb0, const int nsb, const int S, const half * xh, const half * xs, const float * xsc, const float * x,

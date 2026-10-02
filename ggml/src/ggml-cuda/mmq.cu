@@ -97,7 +97,7 @@ void ggml_cuda_mul_mat_q(
     GGML_ASSERT(        src1->type == GGML_TYPE_F32);
     GGML_ASSERT(        dst->type  == GGML_TYPE_F32);
     GGML_ASSERT(!ids || ids->type  == GGML_TYPE_I32); // Optional, used for batched GGML_MUL_MAT_ID.
-    GGML_ASSERT(!ggml_cuda_qpn_is_repacked(src0)); // ticket 0078: a repacked weight holds no GGUF layout
+    GGML_ASSERT(!ggml_cuda_qpn_is_repacked(src0)); // a repacked weight holds no GGUF layout
 
     GGML_TENSOR_BINARY_OP_LOCALS;
 
@@ -345,6 +345,11 @@ bool ggml_cuda_should_use_mmq(enum ggml_type type, int cc, int64_t ne11, int64_t
 #endif //GGML_CUDA_FORCE_MMQ
 
     if (GGML_CUDA_CC_IS_NVIDIA(cc)) {
+        // Volta MoE: with many experts each one sees only a few tokens of the batch, so the grouped
+        // MMQ kernel beats the per-expert fallback (host sync plus a small GEMM per expert) at any batch
+        if (n_experts > 0 && ggml_cuda_highest_compiled_arch(cc) < GGML_CUDA_CC_TURING) {
+            return true;
+        }
         return !fp16_mma_hardware_available(cc) || ne11 < MMQ_DP4A_MAX_BATCH_SIZE;
     }
 

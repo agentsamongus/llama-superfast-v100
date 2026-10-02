@@ -15,7 +15,7 @@
 #include "log.h"
 #include "sampling.h"
 #include "speculative.h"
-#include "../../src/llama-ext.h" // [TAG_SPEC_PIPELINE] staging API: llama_pipe_*
+#include "../../src/llama-ext.h" // staging API: llama_pipe_*
 #include "mtmd.h"
 #include "mtmd-helper.h"
 
@@ -256,23 +256,23 @@ struct server_slot {
     llama_tokens spec_draft;
     llama_tokens spec_prompt;
     std::vector<int32_t> spec_i_batch;
-    std::vector<int32_t> spec_i_batch_dbg; // [TAG_SPEC_COUPLED] LLAMA_SPEC_COUPLED_DEBUG=2: the verified rows, for the log
+    std::vector<int32_t> spec_i_batch_dbg; // LLAMA_SPEC_COUPLED_DEBUG=2: the verified rows, for the log
     common_prompt_checkpoint spec_ckpt;
     bool spec_is_replay = false;
     std::mt19937 spec_synth_rng;
 
-    // [TAG_SPEC_REJECTION] (ticket 0069) the draft's distribution per drafted token of the current round, and this
+    // the draft's distribution per drafted token of the current round, and this
     // request's rounds verified with the rejection step, rounds that took today's path instead, and the rows that
     // took the step
     std::vector<common_rejection_q> spec_q;
-    // [TAG_SPEC_REJECTION_PIPE] (ticket 0070) with the pipeline as well: the draft's own generator, seeded from the
+    // with the pipeline as well: the draft's own generator, seeded from the
     // request's seed, for every draft token the pipelined loop samples, so the verify's draws (the target's generator)
     // do not depend on which chunks were drafted, submitted or dropped
     std::mt19937 spec_rng_dft;
     int32_t n_rs_rounds   = 0;
     int32_t n_rs_fallback = 0;
     int32_t n_rs_steps    = 0;
-    // (ticket 0071) the drafted rows of those rounds that took sample-and-match: a triggered grammar, a forcing
+    // the drafted rows of those rounds that took sample-and-match: a triggered grammar, a forcing
     // reasoning budget, or a draft token not sampled from q
     int32_t n_rs_row_fb   = 0;
 
@@ -365,7 +365,7 @@ struct server_slot {
 
     common_sampler_ptr smpl;
 
-    // [TAG_BACKEND_TOPK] the target context's backend top-k sampler for this slot, created with the context (owned by
+    // the target context's backend top-k sampler for this slot, created with the context (owned by
     // llama_init), and whether it is registered: a request with upstream backend sampling replaces it with its own
     // chain, and the next request registers a fresh top-k chain (backend_topk_own)
     llama_sampler *   backend_topk    = nullptr;
@@ -385,7 +385,7 @@ struct server_slot {
     // not in server_slot_stats to avoid copying to every task result
     std::vector<uint64_t> n_accepted_per_pos;
 
-    // [TAG_SPEC_ADAPT_WIDTH] (ticket 0120, E23) the draft width by depth and acceptance. A verify of 8 rows costs more than one of 4
+    // the draft width by depth and acceptance. A verify of 8 rows costs more than one of 4
     // (7.2 ms at short depth, 11.8 at 64K, 15.6 at 96K, measured), and 6 rows cost what 8 do, so the choice is between the full width
     // and the 4-row width (3 drafted): the full width when its expected tokens per millisecond are at least the narrow one's.
     // ada_acc[i] is a moving average of P(more than i drafted tokens accepted), updated at every drafted position of every round.
@@ -397,7 +397,7 @@ struct server_slot {
         return on;
     }
 
-    // the round GPU time in ms at n_tokens of context, for the 8-row verify (t8) and the 4-row verify (t4): measured with the round timers, ticket 0120, at about 1.3K, 16K, 64K and 96K
+    // the round GPU time in ms at n_tokens of context, for the 8-row verify (t8) and the 4-row verify (t4): measured with the round timers, at about 1.3K, 16K, 64K and 96K
     static void ada_cost(int32_t depth, double & t8, double & t4) {
         static const double tab[][3] = { // depth, t8, t4
             {     0, 37.88,     33.06     },
@@ -498,7 +498,7 @@ struct server_slot {
 
         n_predict_max = -1;
 
-        // [TAG_BACKEND_TOPK] the backend top-k sampler stays registered; an upstream backend sampler (the request's
+        // the backend top-k sampler stays registered; an upstream backend sampler (the request's
         // own chain, freed with smpl) does not
         if (!backend_topk || !backend_topk_on) {
             llama_set_sampler(ctx_tgt, id, nullptr);
@@ -801,7 +801,6 @@ struct server_slot {
 
         common_speculative_print_stats(spec);
 
-        // [TAG_ROUND_TIMERS] (ticket 0089)
         if (ggml_rt_on()) {
             ggml_rt_report(string_format("slot %d", id).c_str());
         }
@@ -1017,7 +1016,7 @@ private:
     common_context_seq_rm_type ctx_tgt_seq_rm_type = COMMON_CONTEXT_SEQ_RM_TYPE_NO;
     common_context_seq_rm_type ctx_dft_seq_rm_type = COMMON_CONTEXT_SEQ_RM_TYPE_NO;
 
-    // [TAG_CKPT_MTP_SKIP] ticket U3 item 5: a prompt checkpoint leaves out the MTP drafter's state (see load_model)
+    // item 5: a prompt checkpoint leaves out the MTP drafter's state (see load_model)
     bool ckpt_dft_skip = false;
 
     common_speculative_ptr spec;
@@ -1228,7 +1227,7 @@ private:
             params_base.load_progress_callback_user_data = &load_progress_text;
         }
 
-        // [TAG_BACKEND_TOPK] the target context gets its backend top-k samplers at creation (LLAMA_BACKEND_TOPK=0: none)
+        // the target context gets its backend top-k samplers at creation (LLAMA_BACKEND_TOPK=0: none)
         params_base.backend_topk = !params_base.embedding &&
             (params_base.pooling_type == LLAMA_POOLING_TYPE_UNSPECIFIED || params_base.pooling_type == LLAMA_POOLING_TYPE_NONE);
 
@@ -1392,19 +1391,18 @@ private:
         }
 
         // try speculative decoding
-        // [TAG_SPEC_COUPLED] with coupled drafting the MTP draft keeps as many candidates per row as the target's
-        // device top-k does (ticket 0058)
+        // with coupled drafting the MTP draft keeps as many candidates per row as the target's
+        // device top-k does
         if (common_speculative_coupled()) {
             params_base.speculative.draft.top_k = std::max(params_base.speculative.draft.top_k, llama_init->backend_topk_n());
             SRV_INF("coupled drafting (LLAMA_SPEC_COUPLED): on, the draft keeps %d candidates per row\n", params_base.speculative.draft.top_k);
         }
-        // [TAG_SPEC_REJECTION] rejection sampling samples the draft from the same candidates (ticket 0069)
+        // rejection sampling samples the draft from the same candidates
         if (common_speculative_rejection()) {
             params_base.speculative.draft.top_k = std::max(params_base.speculative.draft.top_k, llama_init->backend_topk_n());
             SRV_INF("rejection sampling (LLAMA_SPEC_REJECTION): on, the draft keeps %d candidates per row, draft temperature %s\n",
                     params_base.speculative.draft.top_k,
                     common_speculative_rejection_temp() > 0.0f ? std::to_string(common_speculative_rejection_temp()).c_str() : "the target's");
-            // [TAG_SPEC_REJECTION_ADAPT] (ticket 0073)
             if (common_speculative_rejection_nmax() > 0) {
                 SRV_INF("adaptive draft length (LLAMA_SPEC_REJECTION_ADAPT): on, up to %d drafts while the product of q stays at least %.3f; the pipeline stands aside\n",
                         std::max(common_speculative_rejection_nmax(), params_base.speculative.draft.n_max), common_speculative_rejection_cutoff());
@@ -1426,7 +1424,7 @@ private:
             ctx_dft_seq_rm_type = common_context_can_seq_rm(ctx_dft);
         }
 
-        // [TAG_CKPT_MTP_SKIP] ticket U3 item 5: the MTP drafter's memory is a plain attention cache (its seq_rm removes any
+        // item 5: the MTP drafter's memory is a plain attention cache (its seq_rm removes any
         // tail), so it holds nothing a prompt checkpoint must keep: a restore's seq_rm from n_past leaves the cells below
         // n_past, which hold what the checkpoint's copy would put back (a checkpoint whose range the cache no longer
         // holds is erased before it can be used). llama_kv_cache::state_write ignores PARTIAL_ONLY, so the checkpoint
@@ -1442,9 +1440,8 @@ private:
             }
         }
 
-        // [TAG_SPEC_PIPELINE]
         {
-            // default on (ticket 0093), except on the qwen35 line (the 27B, ticket W1), as in llama-memory-recurrent.cpp
+            // default on, except on the qwen35 line (the 27B), as in llama-memory-recurrent.cpp
             const char * e = getenv("LLAMA_SPEC_PIPELINE");
             char arch_tgt[64] = {};
             llama_model_meta_val_str(model_tgt, "general.architecture", arch_tgt, sizeof(arch_tgt));
@@ -1482,7 +1479,6 @@ private:
             slot.id      = i;
             slot.ctx_tgt = ctx_tgt;
 
-            // [TAG_BACKEND_TOPK]
             slot.backend_topk    = llama_init->backend_topk(i);
             slot.backend_topk_n  = slot.backend_topk ? llama_init->backend_topk_n() : 0;
             slot.backend_topk_on = slot.backend_topk != nullptr;
@@ -1981,7 +1977,6 @@ private:
         if (task.need_sampling()) {
             try {
                 slot.smpl.reset(common_sampler_init(model_tgt, task.params.sampling));
-                // [TAG_SPEC_REJECTION_PIPE] (ticket 0070)
                 if (pipe_enabled && common_speculative_rejection()) {
                     slot.spec_rng_dft.seed(common_sampler_get_seed(slot.smpl.get()) ^ 0x70u);
                 }
@@ -2003,7 +1998,7 @@ private:
                 llama_set_sampler(ctx_tgt, slot.id, common_sampler_get(slot.smpl.get()));
                 slot.backend_topk_on = false;
             } else if (slot.backend_topk) {
-                // [TAG_BACKEND_TOPK] the context returns the top backend_topk_n candidates of this slot's rows: the
+                // the context returns the top backend_topk_n candidates of this slot's rows: the
                 // sampler uses them when its chain depends only on its top k and they cover it, and the full logits
                 // otherwise (a grammar that is not lazy, other samplers first, a larger top-k or more biases, and per
                 // row a triggered lazy grammar or a forcing reasoning budget)
@@ -2019,7 +2014,7 @@ private:
                 }
                 common_sampler_set_backend_topk(slot.smpl.get(), vocab,
                         !slot.backend_topk_on ? 0 : k > 0 && n_cand <= slot.backend_topk_n ? slot.backend_topk_n : -1);
-                // [TAG_BACKEND_TOPK] logged once per distinct outcome, so a run shows why its rows read the full logits
+                // logged once per distinct outcome, so a run shows why its rows read the full logits
                 if (slot.backend_topk_on) {
                     static std::set<std::string> seen;
                     const std::string outcome = reason.empty()
@@ -2619,7 +2614,7 @@ private:
             return false;
         }
 
-        // [TAG_SPEC_PIPELINE] a task other than the loop's own may change a slot or the caches: verify what is in flight
+        // a task other than the loop's own may change a slot or the caches: verify what is in flight
         if (pipe_n > 0 && task.type != SERVER_TASK_TYPE_NEXT_RESPONSE && task.type != SERVER_TASK_TYPE_METRICS) {
             pipe_drain();
         }
@@ -3036,7 +3031,7 @@ private:
 #endif
 
     //
-    // [TAG_SPEC_PIPELINE] pipelined speculative decoding (ticket 0055), LLAMA_SPEC_PIPELINE, default on (0: off; ticket 0093)
+    // pipelined speculative decoding, LLAMA_SPEC_PIPELINE, default on (0: off)
     //
     // one generating slot only, with the MTP draft. a verify chunk C (the sampled token and its two drafts) is in
     // flight together with the next chunk N: a guess of C's bonus token and two more drafts from the extended draft
@@ -3045,7 +3040,7 @@ private:
     // of its positions, and the recurrent state rolls back into C from the copy taken before N was submitted
     // (llama_pipe_decode_flags). the target samples every emitted token from the same logits, in the same order, as
     // without the pipeline: only the grouping of the verify batches changes, and a position's logits do not depend on
-    // it for batches of two tokens or more (ticket 0055, step 0)
+    // it for batches of two tokens or more
     //
     struct pipe_chunk {
         llama_tokens toks;     // toks[0]: the sampled token (a restart) or the guess of the previous chunk's bonus
@@ -3053,13 +3048,13 @@ private:
         int32_t      out  = 0; // the target's output slot
         std::vector<float> p;  // the draft's probability of each token (1 for a sampled token)
         float        pk   = 0; // for a chunk behind another: the estimated chance that it is kept
-        // [TAG_SPEC_PIPE_LOOSE] for a chunk behind another: its verify, and every later decode of the request, reads no
+        // for a chunk behind another: its verify, and every later decode of the request, reads no
         // other token of its batch (indep); it was kept by the loose rule (loose), in place of the serial loop's
         // chunk, whose drafts are ser
         bool         indep = false;
         bool         loose = false;
         llama_tokens ser;
-        // [TAG_SPEC_REJECTION_PIPE] rejection sampling with the pipeline (ticket 0070): the draft's row for each token
+        // rejection sampling with the pipeline: the draft's row for each token
         // (empty for a sampled token), the guess g of this chunk's bonus token with its row (LLAMA_TOKEN_NULL: none
         // sampled), and how many of the chunk's last tokens the draft chain feeds before it guesses (3 for a chunk
         // kept behind another: the draft then chains from the target's row, as the serial loop's draft does)
@@ -3069,8 +3064,8 @@ private:
         int32_t            n_chain = 1;
     };
 
-    // [TAG_SPEC_REJECTION_PIPE] rejection sampling together with the pipeline (ticket 0070), when both
-    // LLAMA_SPEC_REJECTION and LLAMA_SPEC_PIPELINE are on (both default on since ticket 0093), for a request whose sampler can take the
+    // rejection sampling together with the pipeline, when both
+    // LLAMA_SPEC_REJECTION and LLAMA_SPEC_PIPELINE are on (both default on since), for a request whose sampler can take the
     // rejection step. every draft token of the pipelined loop is sampled from the draft's q with the slot's own draft
     // generator (spec_rng_dft), including the guess g of a chunk C's bonus token, which is sampled whenever the
     // pipeline guesses at all. C's verify is then rejection sampling with a draft of 3: its two drafts and g against
@@ -3083,12 +3078,12 @@ private:
         return common_speculative_rejection() && common_sampler_rejection_ok(slot.smpl.get());
     }
 
-    // [TAG_SPEC_PIPE_LOOSE] LLAMA_SPEC_PIPE_LOOSE, inside LLAMA_SPEC_PIPELINE (ticket 0068): keep a chunk N behind C when C
+    // LLAMA_SPEC_PIPE_LOOSE, inside LLAMA_SPEC_PIPELINE: keep a chunk N behind C when C
     // is fully accepted and N's guess is C's bonus token, even when N's drafts differ from the serial loop's redraft,
     // provided N's verify and every later decode of the request read no other token of their batch
     // (llama_pipe_rows_independent: the QSA union is off, or the view stays narrower than the padded selection). a row's
     // logits then depend only on its prefix and each token is the serial loop's, but the rounds may end elsewhere: not
-    // exact where a length-limited request ends (the serial loop's last decode may be 1 token). default 0 (ticket 0068).
+    // exact where a length-limited request ends (the serial loop's last decode may be 1 token). default 0.
     // 1: the loose rule; 2: also N's first draft must be the redraft's; 0: 0055's strict rule (N = the redraft)
     static int pipe_loose() {
         static const int v = [] { const char * e = getenv("LLAMA_SPEC_PIPE_LOOSE"); return e ? atoi(e) : 0; }();
@@ -3097,7 +3092,7 @@ private:
 
     // submit a chunk behind the one in flight only when it is likely to be kept (LLAMA_SPEC_PIPE_PMIN): the estimate
     // is the product of the draft's probabilities for the older chunk's drafts and this chunk's first token. 0.1 since
-    // ticket 0058 (was 0.5): with hold/abort a drop costs about 0.2 ms against about 9 ms saved by a keep, and the
+    // (was 0.5): with hold/abort a drop costs about 0.2 ms against about 9 ms saved by a keep, and the
     // calibration (bench/calib.py over poetry and code, every chunk submitted) is flat from 0 to 0.2
     static float pipe_pmin() {
         static const float v = [] { const char * e = getenv("LLAMA_SPEC_PIPE_PMIN"); return e ? (float) atof(e) : 0.1f; }();
@@ -3131,13 +3126,13 @@ private:
     uint64_t      pipe_n_drop_part  = 0;
     uint64_t      pipe_n_drop_guess = 0;
     uint64_t      pipe_n_drop_late  = 0;
-    // [TAG_SPEC_PIPE_LOOSE] chunks kept by the loose rule, and of those the ones that emitted fewer tokens than the
+    // chunks kept by the loose rule, and of those the ones that emitted fewer tokens than the
     // serial chunk would have; late drops the loose rule would have kept but for a batch-dependent verify
     uint64_t      pipe_n_keep_loose  = 0;
     uint64_t      pipe_n_loose_short = 0;
     uint64_t      pipe_n_loose_tok   = 0;
     uint64_t      pipe_n_late_dep    = 0;
-    // [TAG_SPEC_REJECTION_PIPE] verified chunks that took the combined path, those whose drafts were all accepted with a
+    // verified chunks that took the combined path, those whose drafts were all accepted with a
     // guess to test, and the guesses accepted
     uint64_t      pipe_n_rs       = 0;
     uint64_t      pipe_n_rs_g     = 0;
@@ -3164,12 +3159,12 @@ private:
                 !common_speculative_get_synth_probs(spec.get()).empty()) {
             return nullptr;
         }
-        // [TAG_SPEC_REJECTION_PIPE] a request whose sampler can take the rejection step runs the combined mode
-        // (pipe_rs, ticket 0070; ticket 0069 ran it without the pipeline)
+        // a request whose sampler can take the rejection step runs the combined mode
+        // (pipe_rs, which runs it without the pipeline)
         return res;
     }
 
-    // [TAG_SPEC_REJECTION] whether this round's verify takes the rejection step: the toggle is on, the round is not a
+    // whether this round's verify takes the rejection step: the toggle is on, the round is not a
     // checkpoint replay, the draft sampled every drafted token (a non-empty q row holding it), the target's sampler
     // can take the step, and no rollback of this round can need a checkpoint restore, whose replay re-verifies the
     // emitted tokens with sample-and-match
@@ -3268,7 +3263,7 @@ private:
 
     // LLAMA_SPEC_PIPE_GUESS=1: the coupled guess. default off: the draws are exact (every check of the copy on the
     // target's own bonus row gave the target's token), but the draft's distribution at that row is too far from the
-    // target's for the shared draw to help, and it kept fewer chunks than the argmax guess (ticket 0058)
+    // target's for the shared draw to help, and it kept fewer chunks than the argmax guess
     static bool pipe_guess_coupled() {
         static const bool v = [] { const char * e = getenv("LLAMA_SPEC_PIPE_GUESS"); return e != nullptr && atoi(e) != 0; }();
         return v;
@@ -3284,7 +3279,7 @@ private:
         const llama_pos pos0 = slot.prompt.tokens.pos_next();
 
         llama_tokens draft;
-        // [TAG_SPEC_REJECTION_PIPE] the drafts sampled from q with the draft's own generator
+        // the drafts sampled from q with the draft's own generator
         const bool rsp = pipe_rs(slot);
         std::vector<common_rejection_q> q;
         slot.spec_prompt = slot.prompt.tokens.get_text_tokens();
@@ -3349,30 +3344,30 @@ private:
         n.g = LLAMA_TOKEN_NULL;
         n.qg.clear();
         n.n_chain = 1;
-        // [TAG_SPEC_REJECTION_PIPE] g and N's drafts sampled from q through a copy of the target's sampler that has
-        // accepted C's drafts, with the draft's own generator (ticket 0070)
+        // g and N's drafts sampled from q through a copy of the target's sampler that has
+        // accepted C's drafts, with the draft's own generator
         const bool rsp = pipe_rs(slot);
         std::vector<common_rejection_q> qn;
         if (pipe_debug() & 4) {
             llama_pipe_drain(ctx_tgt);
         }
-        // [TAG_SPEC_COUPLED] the guess of C's bonus token is picked with the draw the target's sample of it will use:
+        // the guess of C's bonus token is picked with the draw the target's sample of it will use:
         // a copy of the target's sampler takes one draw for each of C's drafts and accepts it, as the verify does when
         // it accepts them all (the only case where N can be kept), then picks from the draft's candidates at the bonus
-        // row (ticket 0058, LLAMA_SPEC_PIPE_GUESS=1; default: the draft's argmax, as before).
+        // row (LLAMA_SPEC_PIPE_GUESS=1; default: the draft's argmax, as before).
         // with coupled drafting (LLAMA_SPEC_COUPLED) the guess is always coupled, and the same copy then picks N's
         // drafts, as the serial loop's draft of N picks them from the target's sampler after C's verify
         common_sampler_ptr coupled;
         if (rsp) {
             coupled.reset(common_sampler_clone(slot.smpl.get()));
             for (size_t i = 1; i < c.toks.size(); ++i) {
-                common_sampler_accept_draft(coupled.get(), c.toks[i]); // (ticket 0071) a draft need not fit a triggered grammar
+                common_sampler_accept_draft(coupled.get(), c.toks[i]); // a draft need not fit a triggered grammar
             }
         } else if ((pipe_guess_coupled() || common_speculative_coupled()) && common_sampler_coupled_ok(slot.smpl.get())) {
             coupled.reset(common_sampler_clone(slot.smpl.get()));
             for (size_t i = 1; i < c.toks.size(); ++i) {
                 common_sampler_coupled_skip(coupled.get(), c.toks[i]);
-                common_sampler_accept_draft(coupled.get(), c.toks[i]); // (ticket 0071) a draft need not fit a triggered grammar
+                common_sampler_accept_draft(coupled.get(), c.toks[i]); // a draft need not fit a triggered grammar
             }
         }
         if (coupled_debug() >= 1) {
@@ -3413,7 +3408,7 @@ private:
 
         if (pipe_submit(slot, n, true)) {
             pipe_n = 2;
-            // [TAG_SPEC_PIPE_LOOSE] N's graph is built: its verify reads no other token of its batch, and neither does
+            // N's graph is built: its verify reads no other token of its batch, and neither does
             // any decode of the same shape, target or draft, while the request grows to its limit
             if (pipe_loose() != 0) {
                 const int64_t n_more = (int64_t) std::max(0, slot.get_n_draft_max()) + 4*PIPE_N_CHUNK;
@@ -3466,7 +3461,7 @@ private:
     // a chunk N already behind C is kept only when it is that chunk, token for token (its card-1 half then resumes),
     // so every verify batch that contributes tokens is the serial loop's batch. otherwise N is dropped and the fresh
     // chunk is submitted. with finish, nothing new is submitted and the pipeline ends empty.
-    // [TAG_SPEC_REJECTION_PIPE] with rejection sampling (pipe_rs), C's verify also tests the guess g, and N is kept
+    // with rejection sampling (pipe_rs), C's verify also tests the guess g, and N is kept
     // exactly when C's drafts and g are all accepted, with no redraft to compare against
     void pipe_step(server_slot & slot, bool finish) {
         GGML_ASSERT(pipe_n > 0 && pipe_slot == &slot);
@@ -3482,7 +3477,7 @@ private:
             idxs[i] = (int32_t) i;
         }
 
-        // [TAG_SPEC_REJECTION_PIPE] rejection sampling with a draft of 3: C's drafts and the guess g, no bonus row
+        // rejection sampling with a draft of 3: C's drafts and the guess g, no bonus row
         const bool rsp = pipe_rs(slot);
         bool g_acc = false;
         std::vector<llama_token> ids;
@@ -3514,7 +3509,7 @@ private:
 
         const size_t n_acc = ids.size() - 1;
 
-        // [TAG_SPEC_PIPE_LOOSE] a chunk kept by the loose rule: did the serial chunk's drafts reach further?
+        // a chunk kept by the loose rule: did the serial chunk's drafts reach further?
         if (c.loose) {
             size_t k_ser = 0;
             while (k_ser < c.ser.size() && k_ser < ids.size() && c.ser[k_ser] == ids[k_ser]) {
@@ -3524,7 +3519,7 @@ private:
             pipe_n_loose_short += k_ser > n_acc ? 1 : 0;
         }
 
-        // [TAG_SPEC_COUPLED] LLAMA_SPEC_COUPLED_DEBUG: the guess's sampler copy applied to the target's own bonus row
+        // LLAMA_SPEC_COUPLED_DEBUG: the guess's sampler copy applied to the target's own bonus row
         // must give the target's bonus token when the draws are aligned
         if (coupled_debug() >= 1 && has_n && n_acc == drafts.size() && pipe_dbg_copy) {
             const int idx = (int) drafts.size();
@@ -3540,7 +3535,7 @@ private:
         }
 
         // N can only be the next verify batch when all of C is accepted and N starts with C's bonus token
-        // [TAG_SPEC_REJECTION_PIPE] with rejection sampling, N starts with g: kept exactly when g is accepted
+        // with rejection sampling, N starts with g: kept exactly when g is accepted
         const bool cand = has_n && !finish && n_acc == drafts.size() && ids.back() == pipe_c[1].toks[0] && (!rsp || g_acc) &&
                           !(pipe_debug() & 8); // debug: every chunk behind another is dropped (keep rate 0)
 
@@ -3624,7 +3619,7 @@ private:
             return;
         }
 
-        // [TAG_SPEC_REJECTION_PIPE] N is kept: resume it, and the draft chains on from the target's row of C's last
+        // N is kept: resume it, and the draft chains on from the target's row of C's last
         // token through N's tokens (no redraft to compare against)
         if (rsp && cand) {
             if (!llama_pipe_resume(ctx_tgt)) {
@@ -3652,7 +3647,7 @@ private:
         bool keep = false;
         if (cand) {
             const bool same = drafted && next.toks == pipe_c[0].toks;
-            // [TAG_SPEC_PIPE_LOOSE] the loose rule: N's guess is the bonus token already (cand); mode 2 also wants its
+            // the loose rule: N's guess is the bonus token already (cand); mode 2 also wants its
             // first draft to be the redraft's
             const bool loose_rule = !same && drafted && pipe_loose() != 0 &&
                                     (pipe_loose() != 2 || next.toks[1] == pipe_c[0].toks[1]);
@@ -3756,7 +3751,7 @@ private:
 
     // LLAMA_SPEC_CACHE_HASH=<file>: after each verified round with nothing beyond the committed tokens in the caches,
     // append a hash of the slot's target and draft cache state (llama_state_seq_get_data) and its committed length.
-    // with the pipeline that is after a discard; without it, after every round (ticket 0055's cache identity check)
+    // with the pipeline that is after a discard; without it, after every round (the cache identity check)
     std::pair<size_t, uint64_t> pipe_hash_dft_pre = { 0, 0 };
 
     void pipe_cache_hash_dft(server_slot & slot) {
@@ -3863,7 +3858,7 @@ private:
             }
         }
 
-        // [TAG_SPEC_PIPELINE] a single generating slot runs the pipelined loop; anything else drains it first
+        // a single generating slot runs the pipelined loop; anything else drains it first
         if (pipe_enabled) {
             try {
                 if (pipe_update()) {
@@ -4073,7 +4068,7 @@ private:
 
                         slot.spec_prompt = slot.prompt.tokens.get_text_tokens();
 
-                        // [TAG_SPEC_ADAPT_WIDTH] (ticket 0120) the narrow width, or no cap
+                        // the narrow width, or no cap
                         const int32_t ada_full = common_speculative_n_max(spec.get());
                         const int32_t ada_w    = slot.ada_width(ada_full, slot.prompt.n_tokens());
                         const int32_t ada_cap  = ada_w < ada_full ? ada_w : 0;
@@ -4135,12 +4130,12 @@ private:
                    (ctx_dft_seq_rm_type == COMMON_CONTEXT_SEQ_RM_TYPE_RS && draft.size() > llama_n_rs_seq(ctx_dft));
 
                 if (use_ckpt_tgt) {
-                    //const int64_t t_start = ggml_time_us();
+                    // const int64_t t_start = ggml_time_us();
 
                     ckpt.update_tgt(ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
 
-                    //const int64_t t_total = ggml_time_us() - t_start;
-                    //printf("checkpoint total: %f ms\n", t_total / 1000.0);
+                    // const int64_t t_total = ggml_time_us() - t_start;
+                    // printf("checkpoint total: %f ms\n", t_total / 1000.0);
 
                     SLT_DBG(slot, "created speculative checkpoint (pos_min = %d, pos_max = %d, n_tokens = %d, size = %.3f MiB, draft = %.3f MiB)\n",
                             ckpt.pos_min, ckpt.pos_max, slot.prompt.n_tokens(),
@@ -4319,7 +4314,7 @@ private:
 
                                         if (n_match >= (size_t) n_cache_reuse) {
                                             SLT_TRC(slot, "reusing chunk with size %zu, shifting KV cache [%zu, %zu) -> [%zu, %zu)\n", n_match, head_c, head_c + n_match, head_p, head_p + n_match);
-                                            //for (size_t i = head_p; i < head_p + n_match; i++) {
+                                            // for (size_t i = head_p; i < head_p + n_match; i++) {
                                             //    SLT_DBG(slot, "cache token %3zu: %6d '%s'\n", i, prompt_tokens[i], common_token_to_piece(ctx_tgt, prompt_tokens[i]).c_str());
                                             //}
 
@@ -4472,7 +4467,7 @@ private:
 
                         slot.prompt.tokens.keep_first(n_past);
 
-                        // (ticket 0101) the draft injects only the prompt rows its window can reach: those before the prompt's end
+                        // the draft injects only the prompt rows its window can reach: those before the prompt's end
                         // and before each place a checkpoint may be taken (a user message's start, and the two near the end); a
                         // prompt with media anywhere is injected whole (its positions are not its token indices)
                         if (spec) {
@@ -5007,7 +5002,7 @@ private:
                     slot.spec_i_batch_dbg = slot.spec_i_batch;
                 }
                 const auto & synth_probs = common_speculative_get_synth_probs(spec.get());
-                // [TAG_SPEC_REJECTION] the rejection step when the draft sampled every drafted token and no rollback
+                // the rejection step when the draft sampled every drafted token and no rollback
                 // needs a checkpoint (a restored checkpoint replays the round with sample-and-match); else today's path
                 const bool rs = synth_probs.empty() && rejection_round(slot, n_draft);
                 if (common_speculative_rejection() && synth_probs.empty()) {
@@ -5030,7 +5025,7 @@ private:
 
                 GGML_ASSERT(accepted.size() >= 1);
 
-                // [TAG_SPEC_COUPLED] LLAMA_SPEC_COUPLED_DEBUG: the target's samples of the drafted rows; 2 also logs
+                // LLAMA_SPEC_COUPLED_DEBUG: the target's samples of the drafted rows; 2 also logs
                 // each sampled row's device candidates (id:logit)
                 if (coupled_debug() >= 1) {
                     std::string t;
@@ -5098,7 +5093,7 @@ private:
 
             const auto ids = std::move(slot.spec_draft);
 
-            // [TAG_ROUND_TIMERS] (ticket 0089) a round ends at its acceptance
+            // a round ends at its acceptance
             if (ggml_rt_on()) {
                 ggml_rt_round();
             }
@@ -5417,7 +5412,7 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
 
         const auto & prompt = data.at("prompt");
         // TODO: this log can become very long, put it behind a flag or think about a more compact format
-        //SRV_DBG("Prompt: %s\n", prompt.is_string() ? prompt.get<std::string>().c_str() : prompt.dump(2).c_str());
+        // SRV_DBG("Prompt: %s\n", prompt.is_string() ? prompt.get<std::string>().c_str() : prompt.dump(2).c_str());
 
         if (!params.path_prompts_log_dir.empty()) {
             const auto file_path = std::filesystem::path(params.path_prompts_log_dir) / string_format("%012" PRId64 ".txt", ggml_time_ms());

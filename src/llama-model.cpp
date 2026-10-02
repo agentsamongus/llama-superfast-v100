@@ -1895,10 +1895,10 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
         }
     }
 
-    // Ticket 0078: a backend may hold a weight in its own layout. The CUDA backend repacks the trunk's routed K-quant and
-    // IQ4 (ticket 0085) weights (and the output head) into tensor-core fragment order in place (LLAMA_MMVQ_QPN, 0 = off); after that only
+    // A backend may hold a weight in its own layout. The CUDA backend repacks the trunk's routed K-quant and
+    // IQ4 weights (and the output head) into tensor-core fragment order in place (LLAMA_MMVQ_QPN, 0 = off); after that only
     // its tensor-core product reads them. A target's MTP layers (il >= n_layer) and anything read by get_rows stay as loaded.
-    // Ticket 0096: a draft (a model with MTP layers and no trunk) offers its MTP layer's weights to the draft's own routes
+    // A draft (a model with MTP layers and no trunk) offers its MTP layer's weights to the draft's own routes
     // ("ggml_backend_cuda_qpn_repack_draft"), except the embeddings its graph reads by get_rows.
     {
         typedef bool (*repack_fn_t)(ggml_tensor *);
@@ -1910,11 +1910,11 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
             has_trunk = has_trunk || (sscanf(name.c_str(), "blk.%d.", &il) == 1 && il >= 0 && il < (int) hparams.n_layer());
         }
         const bool draft = !has_trunk && hparams.n_layer_nextn > 0;
-        // ticket 0101: a DFlash2 draft (a trunk of its own) offers its layers' weights, fc and selector_hidden to its own routes
+        // a DFlash2 draft (a trunk of its own) offers its layers' weights, fc and selector_hidden to its own routes
         // ("ggml_backend_cuda_qpn_repack_dflash"), never the target's; its selector codebooks are read by get_rows and stay as loaded
         const bool dflash = arch == LLM_ARCH_DFLASH && hparams.dflash_selector_rank > 0;
-        // a weight that other weights view (the merged GDN a/b projection, ticket 0087) stays as loaded: its views are read by
-        // products of their own (ticket 0096: Q8_0 made it a QPN type)
+        // a weight that other weights view (the merged GDN a/b projection) stays as loaded: its views are read by
+        // products of their own (Q8_0 made it a QPN type)
         std::set<const ggml_tensor *> viewed;
         for (auto & [name, cur] : tensors_by_name) {
             if (cur->view_src != nullptr) {
@@ -1922,7 +1922,7 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
             }
         }
         for (auto & [name, cur] : tensors_by_name) {
-            // ticket S2: the merged a/b weight (blk.N.ssm_ab.weight) is the exception: the backend's route table decides, and the graph
+            // the merged a/b weight (blk.N.ssm_ab.weight) is the exception: the backend's route table decides, and the graph
             // then reads it only through the merged product (build_layer_attn_linear), at every token count
             if (viewed.count(cur) && name.find(".ssm_ab.weight") == std::string::npos) {
                 continue;
@@ -3004,7 +3004,7 @@ bool llama_model::set_head_subset(const int32_t * ids, int32_t n) {
     return set_head_subset_rows(ids, n, src, nullptr, ggml_backend_buffer_get_type(src->buffer), "ggml_backend_cuda_qpn_repack_draft");
 }
 
-// ticket 0101: a DFlash2 draft has no head of its own (it borrows the target's): its subset is taken from the head `src` it borrows,
+// a DFlash2 draft has no head of its own (it borrows the target's): its subset is taken from the head `src` it borrows,
 // or from the tensor output.weight of the GGUF file `path` (the MTP draft's own head, Q3_K), onto the device of its output_norm, and
 // repacked by the DFlash2 routes
 bool llama_model::set_head_subset_dflash(const int32_t * ids, int32_t n, const ggml_tensor * src, const char * path) {
@@ -3070,7 +3070,7 @@ bool llama_model::set_head_subset_rows(const int32_t * ids, int32_t n, const ggm
 
     // each row is quantized on its own, so the subset rows are the head's rows byte for byte, in the GGUF layout. A head
     // a backend holds in its own layout (GGML_TENSOR_FLAG_BACKEND_LAYOUT: the target's output.weight, repacked by the
-    // CUDA backend's tensor-core products, ticket 0078, when a draft borrows it, ticket 0082) is read back through that
+    // CUDA backend's tensor-core products,, when a draft borrows it) is read back through that
     // backend's inverse; a backend without one gets no subset
     std::vector<uint8_t> rows((size_t) n * nb1);
     bool backend_layout = false;
@@ -3126,7 +3126,7 @@ bool llama_model::set_head_subset_rows(const int32_t * ids, int32_t n, const ggm
     ggml_backend_tensor_set(w, rows.data(), 0, rows.size());
     ggml_backend_tensor_set(t, ids, 0, (size_t) n * sizeof(int32_t));
 
-    // ticket 0096: the subset is the draft's own weight, read only by the head's product, so the draft's routes may repack it in
+    // the subset is the draft's own weight, read only by the head's product, so the draft's routes may repack it in
     // place (the CUDA backend's tensor-core product; no extra memory)
     bool repacked = false;
     if (ggml_backend_dev_t dev = ggml_backend_buft_get_device(ggml_backend_buffer_get_type(buf.get()))) {

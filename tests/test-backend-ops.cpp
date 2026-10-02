@@ -1370,7 +1370,7 @@ struct test_case {
         check_for_f16_tensor(ctx.get());
 
         if (!matches_filter(out, op_names_filter)) {
-            //printf("  %s: skipping\n", op_desc(out).c_str());
+            // printf("  %s: skipping\n", op_desc(out).c_str());
             return test_status_t::SKIPPED;
         }
 
@@ -1500,11 +1500,11 @@ struct test_case {
             double err = ud->tc->err(f1.data(), f2.data(), f1.size());
             if (err > ud->tc->max_err(ud->backend1)) {
                 printf("[%s] ERR = %.9f > %.9f ", ggml_op_desc(t1), err, ud->tc->max_err(ud->backend1));
-                //for (int i = 0; i < (int) f1.size(); i++) {
+                // for (int i = 0; i < (int) f1.size(); i++) {
                 //    printf("%5d %9.6f %9.6f, diff = %9.6f\n", i, f1[i], f2[i], f1[i] - f2[i]);
                 //}
-                //printf("\n");
-                //exit(1);
+                // printf("\n");
+                // exit(1);
                 ud->ok = false;
             }
             return true;
@@ -1551,7 +1551,7 @@ struct test_case {
         ggml_tensor * out             = build_graph(ctx.get(), ctx_weights.get());
         current_op_name               = op_desc(out);
         if (!matches_filter(out, op_names_filter)) {
-            //printf("  %s: skipping\n", op_desc(out).c_str());
+            // printf("  %s: skipping\n", op_desc(out).c_str());
             return true;
         }
 
@@ -4646,7 +4646,7 @@ struct test_gated_delta_net : public test_case {
         return out;
     }
 
-    // the CUDA chunked prefill route (ticket T5: head size 128, 64 or more tokens before the K snapshot tokens)
+    // the CUDA chunked prefill route (head size 128, 64 or more tokens before the K snapshot tokens)
     // runs its products on fp16 tensor-core operands, a different summation order from the token-serial recurrence
     double max_nmse_err() override {
         return head_size == 128 && n_seq_tokens >= 64 && !kda ? 2e-5 : 1e-7;
@@ -4757,7 +4757,7 @@ struct test_gated_delta_net_cache_fusion : public test_case {
     bool run_whole_graph() override { return true; }
     std::vector<ggml_tensor *> fusion_test_nodes() override { return { cpy_node }; }
 
-    double max_nmse_err() override { // as test_gated_delta_net (ticket T5)
+    double max_nmse_err() override { // as test_gated_delta_net
         return head_size == 128 && n_seq_tokens >= 64 ? 2e-5 : 1e-7;
     }
 
@@ -5219,7 +5219,7 @@ struct test_conv_slots_bitwise : public test_case {
     const int64_t n_tokens;
     const int64_t n_seqs;
     const int64_t n_slots;
-    const bool    direct;   // the shared build_conv_state: a CPY of each window, no CONT (ticket 0084)
+    const bool    direct;   // the shared build_conv_state: a CPY of each window, no CONT
     std::vector<ggml_tensor *> checked;
 
     std::string vars() override {
@@ -5442,7 +5442,7 @@ struct test_gdn_fold_bitwise : public test_case {
     const int     ids_pattern; // 0: each sequence reads its own slot-0 row (in place), 1: other rows
     const bool    g_read;      // the decay gate is read by another node too, so it cannot fold into the launch
     const int     conv_form;   // 0: qwen4exp's build_conv_state_at (CONT -> CPY per slot), 1: the shared build_conv_state (CPY of the window)
-    const int     ab_form;     // 1: alpha and beta are strided views of one [2*H_v, n_tokens*n_seqs] product, beta through a CONT (ticket 0087)
+    const int     ab_form;     // 1: alpha and beta are strided views of one [2*H_v, n_tokens*n_seqs] product, beta through a CONT
     int64_t half = 0;
 
     std::string vars() override {
@@ -5500,7 +5500,7 @@ struct test_gdn_fold_bitwise : public test_case {
         ggml_set_name(alpha_in, "alpha_in");
         ggml_tensor * beta_in = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, H_v, n_tokens*n_seqs);
         ggml_set_name(beta_in, "beta_in");
-        // qwen35's merged product: alpha's rows, then beta's, per token (ticket 0087)
+        // qwen35's merged product: alpha's rows, then beta's, per token
         ggml_tensor * ab_in = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 2*H_v, n_tokens*n_seqs);
         ggml_set_name(ab_in, "ab_in");
         ggml_tensor * dt = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, H_v);
@@ -5655,7 +5655,7 @@ struct test_gdn_fold_bitwise : public test_case {
     }
 };
 
-// Ticket 0087: qwen35's GDN a and b projections as one product. w holds alpha's rows then beta's; the merged
+// qwen35's GDN a and b projections as one product. w holds alpha's rows then beta's; the merged
 // product must equal the two products over its halves (views of w) bit for bit, which holds while each output row
 // reduces alone whatever the row count (mul_mat_vec_q, up to 8 tokens). Above that (prefill: MMQ's stream-k splits
 // K by the tile count) the graph keeps the two products; there the case only reports whether the halves agree.
@@ -5731,11 +5731,11 @@ struct test_ab_merge_bitwise : public test_case {
     }
 };
 
-// Ticket 0043's glue folds: the real chain twice in one graph, the second half with an intermediate marked as
+// The glue folds: the real chain twice in one graph, the second half with an intermediate marked as
 // an output so that it runs as separate kernels; the two halves must be bit-identical.
 //   kind 0 (HC_NORM):     dsv4_hc_post (no comb) -> rms_norm -> mul by the [n_embd, hc] gamma, both outputs
 //   kind 1 (SHEXP_TAIL):  moe + shexp * sigmoid(gate)
-// Ticket 0056's folds, the same way:
+// The second set of folds, the same way:
 //   kind 2 (CONV_GATHER): build_rs's GET_ROWS of one conv cache row -> the conv-input CONCAT, its rollback-slot saves
 //                         and the conv; n_embd is the channel count, hc picks the row (0: the sequence's own slot-0
 //                         row, which the saves overwrite; 1: a row of the last slot)
@@ -5753,12 +5753,12 @@ struct test_ab_merge_bitwise : public test_case {
 //                         ADD kq_mask, F16; n_embd is n_kv, hc the top-k width (cells repeat)
 //   kind 9 (IDX_SUM):     build_qsa_top_k's score, relu of the [n_blocks, n_h, n_t] product, summed over the heads
 //                         (CONT of head 0, then an ADD per head); n_embd is n_blocks, hc the head count
-// Ticket 0087's qwen35 folds, the same way:
+// The qwen35 folds, the same way:
 //   kind 10 (ADD_NORM):   three trunk steps, ADD(block out, residual) -> rms_norm -> mul by the norm weight, the normed
 //                         output read by a stand-in for the block and the sum by the next ADD; the last sum is read by
 //                         its norm only (the output norm's case: the normed output may take its place); hc is unused
 //   kind 11 (NORM_GATE):  kind 3 with qwen35's gate, rms_norm(x) * w, the gate's GEMV, then * silu(z)
-// Ticket 0090's producers of prepared inputs (run with LLAMA_QPN_PREP_CHECK=5 or 7, every eligible output then writes
+// The producers of prepared inputs (run with LLAMA_QPN_PREP_CHECK=5 or 7, every eligible output then writes
 // its prepared input and has it compared with qpn_prep_kernel's; the fold kinds 3, 4, 10 and 11 take them too):
 //   kind 12 (RMS_NORM_MUL): a lone rms_norm(x) * w, qwen35's first layer, against the norm and the multiply apart
 //   kind 13 (SWIGLU):       swiglu_split(gate, up), the FFN, against silu(gate) and the multiply apart
@@ -10522,10 +10522,10 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         return (ins + 2 * p - d * (ks - 1) - 1) / s + 1;
     };
 
-    //uint32_t s0 = 3;
+    // uint32_t s0 = 3;
     uint32_t s1 = 5;
     uint32_t p0 = 5;
-    //uint32_t p1 = 2;
+    // uint32_t p1 = 2;
     uint32_t d0 = 2;
     uint32_t d1 = 4;
 
@@ -10878,8 +10878,8 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         add_test_bin_bcast(type, {5120, 1, 1, 1}, {1, 256, 1, 1});
         add_test_bin_bcast(type, {640, 1, 1, 1}, {1, 1, 1, 1});
         add_test_bin_bcast(type, {64, 262144, 1, 1}, {1, 1, 1, 1});
-        //add_test_bin_bcast(type, {3, 3, 2560, 1280}, {1, 1, 1, 1});
-        //add_test_bin_bcast(type, {3, 3, 2560, 1280}, {2, 1, 1, 1});
+        // add_test_bin_bcast(type, {3, 3, 2560, 1280}, {1, 1, 1, 1});
+        // add_test_bin_bcast(type, {3, 3, 2560, 1280}, {2, 1, 1, 1});
     }
 
     // single inplace tests, especially important for WebGPU backend since kernels for inplace vs. not are different
@@ -11145,7 +11145,7 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_gdn_fold_bitwise(128, 16, 16, 3, 1, 3, 0));
     test_cases.emplace_back(new test_gdn_fold_bitwise( 64,  4,  8, 3, 1, 3, 0));
     test_cases.emplace_back(new test_gdn_fold_bitwise( 32,  2,  4, 2, 3, 2, 1));
-    // ticket 0084: qwen35's chain (the shared build_conv_state), the 27B's shape at n-max 2 and 3 (K = 3, 4)
+    // qwen35's chain (the shared build_conv_state), the 27B's shape at n-max 2 and 3 (K = 3, 4)
     for (int64_t n_tokens : { 1, 2, 3, 4 }) {
         test_cases.emplace_back(new test_gdn_fold_bitwise(128, 16, 48, n_tokens, 1, 4, 0, false, 1));
     }
@@ -11154,11 +11154,11 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_gdn_fold_bitwise(128, 16, 48, 4, 2, 4, 0, false, 1));
     test_cases.emplace_back(new test_gdn_fold_bitwise(128, 16, 48, 1, 1, 1, 0, false, 1));
     test_cases.emplace_back(new test_gdn_fold_bitwise(128, 16, 48, 4, 1, 4, 0, true,  1));
-    // ticket 0087: the merged a/b product against the two, at the model's shape, 1..8 tokens, then two prefill sizes (reported)
+    // the merged a/b product against the two, at the model's shape, 1..8 tokens, then two prefill sizes (reported)
     for (int64_t nt : {1, 2, 3, 4, 5, 6, 7, 8, 64, 512}) {
         test_cases.emplace_back(new test_ab_merge_bitwise(GGML_TYPE_Q8_0, 5120, 48, nt));
     }
-    // qwen35's merged a/b product (ticket 0087): alpha and beta strided views of it, 1..4 and 8 tokens, 2 sequences,
+    // qwen35's merged a/b product: alpha and beta strided views of it, 1..4 and 8 tokens, 2 sequences,
     // and with the decay gate read elsewhere (it cannot fold, and its ADD reads the strided view)
     for (int64_t nt : {1, 2, 3, 4, 8}) {
         test_cases.emplace_back(new test_gdn_fold_bitwise(128, 16, 48, nt, 1, std::min<int64_t>(nt, 4), 0, false, 1, 1));
@@ -11168,14 +11168,14 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     // the decay gate read elsewhere too: it runs as one gate kernel, beta still folds
     test_cases.emplace_back(new test_gdn_fold_bitwise(128, 16, 48, 3, 1, 3, 0, true));
     test_cases.emplace_back(new test_gdn_fold_bitwise(128, 16, 48, 1, 2, 3, 1, true));
-    // ticket 0043's glue folds, at the model's width, for 1..4 tokens and an odd width
+    // the glue folds, at the model's width, for 1..4 tokens and an odd width
     for (int kind : {0, 1}) {
         for (int64_t nt : {1, 3, 4}) {
             test_cases.emplace_back(new test_glue_fold_bitwise(kind, 2560, 4, nt));
         }
         test_cases.emplace_back(new test_glue_fold_bitwise(kind, 1000, 4, 3));
     }
-    // ticket 0056's folds: the model's GDN conv (10240 channels), both row choices, 1..4 tokens and a small width
+    // more folds: the model's GDN conv (10240 channels), both row choices, 1..4 tokens and a small width
     for (int64_t row : {0, 1}) {
         for (int64_t nt : {1, 3, 4}) {
             test_cases.emplace_back(new test_glue_fold_bitwise(2, 10240, row, nt));
@@ -11210,7 +11210,7 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     }
     test_cases.emplace_back(new test_glue_fold_bitwise(9, 1024, 4, 3));
     test_cases.emplace_back(new test_glue_fold_bitwise(9, 100, 3, 3));
-    // ticket 0087's qwen35 folds: the trunk width (the 1024-thread block) and the GDN heads, 1..4 and 8 tokens, and
+    // the qwen35 folds: the trunk width (the 1024-thread block) and the GDN heads, 1..4 and 8 tokens, and
     // widths for the 256-thread block
     for (int64_t nt : {1, 2, 3, 4, 8}) {
         test_cases.emplace_back(new test_glue_fold_bitwise(10, 5120, 1, nt));
@@ -11220,7 +11220,7 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_glue_fold_bitwise(10, 2048, 1, 3));
     test_cases.emplace_back(new test_glue_fold_bitwise(11, 64, 8, 3));
     test_cases.emplace_back(new test_glue_fold_bitwise(11, 2048, 2, 3));
-    // ticket 0090's producers at the model's widths (the trunk 5120, ffn down's input 17408, the attention output
+    // the producers at the model's widths (the trunk 5120, ffn down's input 17408, the attention output
     // 6144 = 24 heads of 256) for 1..4 and 8 tokens, and widths that are not a whole slice
     test_cases.emplace_back(new test_glue_fold_bitwise(4, 256, 24, 8));
     test_cases.emplace_back(new test_glue_fold_bitwise(3, 128, 48, 8));
@@ -11253,12 +11253,12 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     for (ggml_type type_a : all_types) {
         for (int i = 1; i < 10; ++i) {
             test_cases.emplace_back(new test_mul_mat(type_a,    GGML_TYPE_F32, 16,  i, 1*256, { 1,  1}, {1, 1}));
-            //test_cases.emplace_back(new test_mul_mat(type_a,    GGML_TYPE_F32, 12,  i, 2*256, { 2,  1}, {1, 1}));
-            //test_cases.emplace_back(new test_mul_mat(type_a,    GGML_TYPE_F32, 11,  i, 3*256, { 1,  3}, {5, 1}));
-            //test_cases.emplace_back(new test_mul_mat(type_a,    GGML_TYPE_F32, 13,  i, 4*256, { 2,  3}, {1, 1}));
-            //test_cases.emplace_back(new test_mul_mat(type_a,    GGML_TYPE_F32, 17,  i, 31*256, { 4,  1}, {1, 1}));
-            //test_cases.emplace_back(new test_mul_mat(type_a,    GGML_TYPE_F32, 18,  i, 32*256, { 1,  1}, {8, 1}));
-            //test_cases.emplace_back(new test_mul_mat(type_a,    GGML_TYPE_F32, 19,  i, 33*256, { 1,  1}, {1, 1}));
+            // test_cases.emplace_back(new test_mul_mat(type_a,    GGML_TYPE_F32, 12,  i, 2*256, { 2,  1}, {1, 1}));
+            // test_cases.emplace_back(new test_mul_mat(type_a,    GGML_TYPE_F32, 11,  i, 3*256, { 1,  3}, {5, 1}));
+            // test_cases.emplace_back(new test_mul_mat(type_a,    GGML_TYPE_F32, 13,  i, 4*256, { 2,  3}, {1, 1}));
+            // test_cases.emplace_back(new test_mul_mat(type_a,    GGML_TYPE_F32, 17,  i, 31*256, { 4,  1}, {1, 1}));
+            // test_cases.emplace_back(new test_mul_mat(type_a,    GGML_TYPE_F32, 18,  i, 32*256, { 1,  1}, {8, 1}));
+            // test_cases.emplace_back(new test_mul_mat(type_a,    GGML_TYPE_F32, 19,  i, 33*256, { 1,  1}, {1, 1}));
         }
         // mat-vec shaders split k across lanes and loop over the blocks in strides. k must be
         // long enough that the loop wraps, else the stride is never exercised
@@ -11536,7 +11536,7 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
 
     // test src1 f16 overflow
     // TODO: https://github.com/ggml-org/llama.cpp/pull/26223#issuecomment-5585815365
-    //for (int n : {16, 32, 64}) {
+    // for (int n : {16, 32, 64}) {
     //    test_cases.emplace_back(new test_mul_mat_id(GGML_TYPE_Q4_K, GGML_TYPE_F32, 128, 4, false, 4096, n, 2048, 1e5f));
     //    test_cases.emplace_back(new test_mul_mat_id(GGML_TYPE_Q8_0, GGML_TYPE_F32, 8,   2, false, 512,  n, 256,  1e5f));
     //}
@@ -11927,7 +11927,7 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_topk_qsa(64,   256,   2, 1, 200));  // small k: unfused fallback
 
     // exhaustive top_k tests
-    //for (int i = 1; i < 9999; ++i) {
+    // for (int i = 1; i < 9999; ++i) {
     //    test_cases.emplace_back(new test_top_k(GGML_TYPE_F32, {i, 2, 1, 3}, rand() % i + 1));
     //}
 
@@ -12087,7 +12087,7 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         }
     }
 
-    // ticket 0088: BF16 caches that the tile kernel reads directly (qwen35: head size 256, 4 KV heads, GQA 6, 1-8 tokens),
+    // BF16 caches that the tile kernel reads directly (qwen35: head size 256, 4 KV heads, GQA 6, 1-8 tokens),
     // with GQA 1 and 2 for the other ncols2 variants and a KV length that isn't a multiple of the tile for the OOB path.
     for (int hs : { 128, 256, }) {
         for (int nr2 : { 1, 2, 6, }) {
@@ -12123,7 +12123,7 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
                                         if (nr2 == 16 && hsk != 192) continue;
                                         if (nr2 == 20 && (nh != 1 || hsk != 576)) continue;
                                         if (nr2 == 32 && (nh != 1 || hsk != 320)) continue;
-                                        //for (int kv : { 1, 17, 31, 33, 61, 113, 65, 127, 129, 130, 255, 260, 371, 380, 407, 512, 1024, }) {
+                                        // for (int kv : { 1, 17, 31, 33, 61, 113, 65, 127, 129, 130, 255, 260, 371, 380, 407, 512, 1024, }) {
                                         for (int kv : { 113, 512, 1024, }) {
                                             if (nr2 != 1 && kv != 512) continue;
                                             for (int nb : { 1, 3, 32, 75, }) {
@@ -12316,7 +12316,7 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
 
     // Fused row-pair coverage: minimum rows, an even pair, and an odd tail.
     // TODO: the max_nmse_err() for these cases is not estimated correctly causing sporadic false failures.
-    //for (ggml_glu_op glu_op : { GGML_GLU_OP_SWIGLU, GGML_GLU_OP_GEGLU }) {
+    // for (ggml_glu_op glu_op : { GGML_GLU_OP_SWIGLU, GGML_GLU_OP_GEGLU }) {
     //    for (int64_t m_batch : { 2, 3, 4 }) {
     //        for (int64_t rows : { 1, 2, 3 }) {
     //            test_cases.emplace_back(new test_mul_mat_vec_fusion(GGML_TYPE_Q4_K, glu_op, m_batch, rows, 256,
@@ -12413,7 +12413,7 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_gated_delta_net_cache_fusion(GGML_TYPE_F32, 8, 32,   4, 2, 4));
     test_cases.emplace_back(new test_gated_delta_net_cache_fusion(GGML_TYPE_F32, 4, 32,   8, 1, 4));
 
-    // the CUDA chunked prefill route (ticket T5): head size 128, 64 or more tokens ahead of the K snapshot tokens
+    // the CUDA chunked prefill route: head size 128, 64 or more tokens ahead of the K snapshot tokens
     test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 4, 128,  64, 1));
     test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 4, 128, 200, 1));
     test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 4, 128, 130, 2));
@@ -12464,14 +12464,14 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
 static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
     std::vector<std::unique_ptr<test_case>> test_cases;
 
-    // ticket 0121: the 27B's prefill attention (256/256, 4 KV heads x gqa 6), a 512-token micro-batch and a few draft-verify widths at depth
+    // the 27B's prefill attention (256/256, 4 KV heads x gqa 6), a 512-token micro-batch and a few draft-verify widths at depth
     for (int64_t kv : {16384, 65536, 98304}) {
         for (int64_t nb : {512, 2048, 16, 8}) {
             test_cases.emplace_back(new test_flash_attn_ext(256, 256, 4, {6, 1}, kv, nb, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
         }
     }
 
-    // ticket 0084: the 27B's GDN recurrence (16 k heads, 48 v heads, 128 wide) with and without the per-position snapshots
+    // the 27B's GDN recurrence (16 k heads, 48 v heads, 128 wide) with and without the per-position snapshots
     for (auto tk : {std::pair<int64_t, int64_t>{4, 4}, {4, 1}, {3, 3}, {3, 1}, {1, 1}, {2, 1}, {7, 1}}) {
         test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 16, 128, tk.first, 1, 3, false, false, tk.second));
     }

@@ -1,6 +1,6 @@
 #include "kq-mask.cuh"
 
-// [TAG_KQ_MASK_DEVICE] ticket T3. One thread per 8 cells: it applies the changed cells to the mirror, then writes the
+//. One thread per 8 cells: it applies the changed cells to the mirror, then writes the
 // 8 mask values of every row (keep: 0x0000, drop: -inf 0xFC00, the host loop's llama_cast of 0.0f and -INFINITY).
 // A cell is written to the mirror and read for the mask by the same thread, so the update needs no grid barrier.
 

@@ -1427,7 +1427,7 @@ struct ggml_cuda_concurrent_event {
                 }
             }
 
-            //check if all srcs are either in branch or don't have a branch
+            // check if all srcs are either in branch or don't have a branch
             for (int i = 0; i < GGML_MAX_SRC; ++i) {
                 if (!tensor->src[i]) {
                     continue;
@@ -1474,10 +1474,10 @@ struct ggml_cuda_stream_context {
 };
 
 struct ggml_backend_cuda_context {
-    // ticket 0042's shared q8_1 slots (LLAMA_Q8_SHARE), one buffer per backend context: two contexts on one device
-    // (the target and the MTP draft) can compute at the same time on their own streams [TAG_SPEC_PIPELINE]
+    // the shared q8_1 slots (LLAMA_Q8_SHARE), one buffer per backend context: two contexts on one device
+    // (the target and the MTP draft) can compute at the same time on their own streams
     char * q8_share_buf = nullptr;
-    char * qpn_share_buf = nullptr; // ticket 0086: the same for the tensor-core products' fp16 activations
+    char * qpn_share_buf = nullptr; // the same for the tensor-core products' fp16 activations
 
     int device;
     std::string name;

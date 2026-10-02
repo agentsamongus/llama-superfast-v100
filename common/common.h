@@ -118,7 +118,7 @@ enum common_sampler_type {
     COMMON_SAMPLER_TYPE_TOP_K       = 2,
     COMMON_SAMPLER_TYPE_TOP_P       = 3,
     COMMON_SAMPLER_TYPE_MIN_P       = 4,
-  //COMMON_SAMPLER_TYPE_TFS_Z       = 5,
+  // COMMON_SAMPLER_TYPE_TFS_Z       = 5,
     COMMON_SAMPLER_TYPE_TYPICAL_P   = 6,
     COMMON_SAMPLER_TYPE_TEMPERATURE = 7,
     COMMON_SAMPLER_TYPE_XTC         = 8,
@@ -331,7 +331,7 @@ struct common_params_speculative_draft {
 
     bool backend_sampling = true; // offload draft sampling to the backend (default: on)
 
-    int32_t top_k = 10; // [TAG_SPEC_COUPLED] the MTP draft's candidates per row (its device top-k)
+    int32_t top_k = 10; // the MTP draft's candidates per row (its device top-k)
 
     common_params_model mparams;
 
@@ -473,7 +473,7 @@ struct common_params {
     int32_t n_sequences           =     1; // number of sequences to decode
     int32_t n_outputs_max         =     0; // max outputs in a batch (0 = n_batch)
     int32_t n_outputs_max_per_seq =     1; // max outputs per sequence
-    bool    backend_topk          = false; // [TAG_BACKEND_TOPK] create the context with backend top-k samplers (common_sampler_backend_topk_n)
+    bool    backend_topk          = false; // create the context with backend top-k samplers (common_sampler_backend_topk_n)
     int32_t grp_attn_n            =     1; // group-attention factor
     int32_t grp_attn_w            =   512; // group-attention width
     int32_t n_print               =    -1; // print token count every n tokens (-1 = disabled)
@@ -954,7 +954,7 @@ struct common_init_result {
     common_sampler * sampler(llama_seq_id seq_id);
     void reset_samplers();
 
-    // [TAG_BACKEND_TOPK] with params.backend_topk, every sequence of the context has a backend top-k(n) sampler from
+    // with params.backend_topk, every sequence of the context has a backend top-k(n) sampler from
     // its creation on: n, and the sampler of one sequence (0 and nullptr when there are none)
     int32_t backend_topk_n() const;
     struct llama_sampler * backend_topk(llama_seq_id seq_id);
@@ -1185,7 +1185,7 @@ enum ggml_opt_optimizer_type common_opt_get_optimizer(const char *);
 // prompt utils
 //
 
-// ticket 0121: checkpoint bytes. Large blocks come from mmap with MAP_POPULATE (the kernel pre-faults the pages in one call, about 4x
+// checkpoint bytes. Large blocks come from mmap with MAP_POPULATE (the kernel pre-faults the pages in one call, about 4x
 // cheaper than 38,000 first-touch faults) and are not zero-filled by resize (every byte is overwritten by the state copy).
 template<typename T>
 struct common_ckpt_allocator {
@@ -1222,7 +1222,7 @@ struct common_prompt_checkpoint {
     // (e.g. eagle3's deferred-boundary g_embd row)
     std::vector<uint8_t> data_spec;
 
-    // ticket 0121: the big buffers go back to a small pool when a checkpoint is destroyed or cleared, and update_tgt / update_dft
+    // the big buffers go back to a small pool when a checkpoint is destroyed or cleared, and update_tgt / update_dft
     // take them from it, so a new checkpoint does not pay for a fresh 150 MiB allocation (page faults plus zero fill, 59 ms measured)
     common_prompt_checkpoint() = default;
     common_prompt_checkpoint(const common_prompt_checkpoint &) = default;

@@ -330,11 +330,11 @@ extern "C" {
     GGML_API int                  ggml_backend_sched_get_n_splits(ggml_backend_sched_t sched);
     GGML_API int                  ggml_backend_sched_get_n_copies(ggml_backend_sched_t sched);
 
-    // [TAG_SPEC_PIPELINE] let a graph compute start while the previous one is still in flight on the same copy slot:
+    // let a graph compute start while the previous one is still in flight on the same copy slot:
     // a copy into a split's input also waits, on the input backend's stream, until the split backend is done with it
     GGML_API void                 ggml_backend_sched_set_pipe(ggml_backend_sched_t sched, bool pipe);
 
-    // [TAG_SPEC_PIPELINE] the next graph compute stops before its first split on backend (NULL: no hold); resume runs
+    // the next graph compute stops before its first split on backend (NULL: no hold); resume runs
     // the held splits, abort drops them. nothing else may run on the scheduler in between
     GGML_API void                 ggml_backend_sched_set_hold(ggml_backend_sched_t sched, ggml_backend_t backend);
     GGML_API bool                 ggml_backend_sched_is_held(ggml_backend_sched_t sched);

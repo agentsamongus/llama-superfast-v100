@@ -121,7 +121,7 @@ static constexpr __host__ __device__ fattn_mma_config ggml_cuda_fattn_mma_get_co
     GGML_CUDA_FATTN_MMA_CONFIG_CASE(576, 512, 32, 128, 2,  32, 160, 128,  64, 1, false);
     GGML_CUDA_FATTN_MMA_CONFIG_CASE(576, 512, 64, 256, 1,  32, 160, 128,  64, 1, false);
 
-    // ticket 0121: 256/256, the 27B's head size (it ran on the Ampere entries, whose cp.async stages are zero here).
+    // 256/256, the 27B's head size (it ran on the Ampere entries, whose cp.async stages are zero here).
     // The Volta tile kernel keeps VKQ in 128 fp16 registers per lane, so Q must not also live in registers (Q_in_reg = false; with it the kernel
     // spilled 568 bytes and ran at 19 TFLOPS), and K/V tiles of 64 half2 keep the block at 45 KB of shared memory, two blocks per SM.
     // Only ncols >= 32 exist on Volta (a warp covers 32 columns).
@@ -466,7 +466,7 @@ static __device__ __forceinline__ void flash_attn_ext_f16_load_tile(
                     } else {
                         src = !oob_check || i < i_sup ? KV + int64_t(k_VKQ_0 + i)*stride_KV + k*h2_per_chunk : zero;
                     }
-                    // [TAG_FATTN_MMA_BF16] (ticket 0120) with a BF16 cache the 16 bytes are 8 bf16 values, converted here exactly as the
+                    // with a BF16 cache the 16 bytes are 8 bf16 values, converted here exactly as the
                     // separate convert_unary<bf16, half> pass converts them: __float2half(__bfloat162float(x))
                     half2 cvt[4];
                     const half2 * src16 = src;
@@ -1262,7 +1262,7 @@ static __device__ __forceinline__ void flash_attn_ext_f16_process_tile(
         const int kb0_start,
         const int kb0_stop) {
 #if defined(VOLTA_MMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE) || defined(AMD_MFMA_AVAILABLE)
-    //In this kernel Q, K, V are matrices while i, j, k are matrix indices.
+    // In this kernel Q, K, V are matrices while i, j, k are matrix indices.
 
     constexpr int warp_size = ggml_cuda_get_physical_warp_size();
     constexpr int ncols = ncols1 * ncols2;
@@ -1387,7 +1387,7 @@ static __device__ __forceinline__ void flash_attn_ext_f16_process_tile(
     // need not hold finite values (ggml_qsa_union leaves them unwritten), and 0*NaN poisons the tile.
     // Skipping leaves KQ_max, KQ_rowsum and VKQ at their initial values, which is exactly what a fully
     // masked tile with finite data contributes, so the stream-k fixup combines the same result.
-    // (ticket 0074: garbage from 5-token verifies at 16K, where the union's attention takes this kernel)
+    // (garbage from 5-token verifies at 16K, where the union's attention takes this kernel)
     if (kb0_start < kb0_stop) {
 
     // Preload mask and K data for first iteration when using cp_async with multiple stages:
@@ -2064,7 +2064,7 @@ static __global__ void flash_attn_ext_f16(
 
 bool ggml_cuda_flash_attn_ext_mma_f16_shall_use_sparse(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
 
-// [TAG_FATTN_MMA_BF16] (ticket 0120, E23) on Volta a decode-sized call (at most 16 query rows) with a BF16 K/V cache reads the cache
+// on Volta a decode-sized call (at most 16 query rows) with a BF16 K/V cache reads the cache
 // directly: the loader converts each 16-byte chunk exactly as the separate convert_unary<bf16, half> pass does, so the result is
 // bitwise that of the converting path, without that pass (3.6, 13.4 and 20.0 ms per verify round at 16K, 64K and 96K on the 27B).
 // LLAMA_FATTN_MMA_BF16=0 restores the pass. Not for prefill-sized calls: there every Q-tile block would repeat the conversion.

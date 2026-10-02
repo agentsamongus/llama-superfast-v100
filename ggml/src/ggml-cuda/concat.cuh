@@ -16,7 +16,7 @@ struct ggml_cuda_conv_slots {
     int64_t off[GGML_CUDA_CONV_SLOTS_MAX]  = {};
     size_t  nb1[GGML_CUDA_CONV_SLOTS_MAX]  = {};
 
-    // LLAMA_GDN_FUSE_CONV (ticket 0029): the depth-4 conv over each written row and its silu, as ssm_conv_f32
+    // LLAMA_GDN_FUSE_CONV: the depth-4 conv over each written row and its silu, as ssm_conv_f32
     // with a fused silu computes them, written to conv_y [channels, n_t, seq]; null leaves the conv to its node
     const float * conv_w     = nullptr; // [4, channels], rows conv_w_nb1 bytes apart
     size_t        conv_w_nb1 = 0;
@@ -25,7 +25,7 @@ struct ggml_cuda_conv_slots {
     size_t        conv_y_nb2 = 0;       // bytes between sequences
     float         conv_b     = 0.0f;    // the bias ssm_conv adds when it has none
 
-    // LLAMA_FOLD_CONV_GATHER (ticket 0056): the concat's first source is a GET_ROWS of whole cache rows that was
+    // LLAMA_FOLD_CONV_GATHER: the concat's first source is a GET_ROWS of whole cache rows that was
     // not launched; sequence i2's row is read from gather_rows + ids[i2]*gather_nb1 instead, laid out as src0
     const char *    gather_rows = nullptr;
     const int32_t * gather_ids  = nullptr;

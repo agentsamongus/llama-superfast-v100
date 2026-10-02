@@ -3,7 +3,7 @@
 #include "common.h"
 #include "fit.h"
 #include "log.h"
-#include "../src/llama-ext.h" // [TAG_SPEC_REJECTION] llama_sampler_chain_draw_uniform
+#include "../src/llama-ext.h" // llama_sampler_chain_draw_uniform
 #include "reasoning-budget.h"
 
 #include "ggml.h"
@@ -124,7 +124,7 @@ struct common_sampler {
 
     llama_token_data_array cur_p;
 
-    // [TAG_BACKEND_TOPK] number of top candidates the context returns for this sampler's rows (0: none), and the
+    // number of top candidates the context returns for this sampler's rows (0: none), and the
     // tokens the chain's logit bias sets to -inf (sorted)
     int32_t backend_topk = 0;
 
@@ -136,7 +136,7 @@ struct common_sampler {
         llama_sampler_reset(chain);
     }
 
-    // [TAG_BACKEND_TOPK] the rows carry the backend's top n = backend_topk candidates, and the chain's result depends
+    // the rows carry the backend's top n = backend_topk candidates, and the chain's result depends
     // only on its k = params.top_k highest logits in order, after a logit bias that can only set tokens to -inf
     // (common_sampler_topk_exact); n >= k + 1 + the number of those tokens. if the k + 1 highest candidates that are
     // not set to -inf are finite and strictly decreasing, the k highest of the whole biased vocabulary are the same
@@ -188,14 +188,14 @@ struct common_sampler {
 
     std::vector<float> topk_tmp = {};
 
-    // [TAG_BACKEND_TOPK] common_reasoning_budget_apply changes the row only in REASONING_BUDGET_FORCING; in every
+    // common_reasoning_budget_apply changes the row only in REASONING_BUDGET_FORCING; in every
     // other state it returns before touching cur_p, so the chain sees the candidates exactly as without it. the
     // state is read per row, after the tokens accepted before this row
     bool rbudget_topk_ok() const {
         return rbudget == nullptr || common_reasoning_budget_get_state(rbudget) != REASONING_BUDGET_FORCING;
     }
 
-    // [TAG_BACKEND_TOPK] a lazy grammar's apply returns before touching cur_p until its trigger fires (the trigger is
+    // a lazy grammar's apply returns before touching cur_p until its trigger fires (the trigger is
     // found when a token is accepted); once triggered it masks candidates, so its rows read the full logits. the state
     // is read per row, after the tokens accepted before this row
     bool grmr_topk_ok() const {
@@ -214,7 +214,7 @@ struct common_sampler {
 
     void set_logits(struct llama_context * ctx, int idx) {
         if (backend_topk != 0) {
-            // [TAG_BACKEND_TOPK] a reasoning budget that is forcing its end sequence sets every token but one to -inf,
+            // a reasoning budget that is forcing its end sequence sets every token but one to -inf,
             // and the forced token need not be a candidate: those rows read the full logits (rbudget_topk_ok), as do
             // the rows after a lazy grammar has triggered (grmr_topk_ok)
             n_topk_rows++;
@@ -264,7 +264,7 @@ struct common_sampler {
         return common_time_meas(t_total_us, params.no_perf);
     }
 
-    // [TAG_BACKEND_TOPK] rows sampled with backend candidates, and how many of them needed the full logits
+    // rows sampled with backend candidates, and how many of them needed the full logits
     uint64_t n_topk_rows = 0;
     uint64_t n_topk_full = 0;
 
@@ -713,7 +713,6 @@ struct llama_sampler * common_sampler_get(const struct common_sampler * gsmpl) {
     return gsmpl->chain;
 }
 
-// [TAG_BACKEND_TOPK]
 static bool common_backend_topk_enabled() {
     static const bool v = [] {
         const char * e = getenv("LLAMA_BACKEND_TOPK");
@@ -760,7 +759,7 @@ int32_t common_sampler_topk_exact(const struct common_sampler * gsmpl, const str
         std::string * reason) {
     *n_cand = 0;
 
-    // [TAG_BACKEND_TOPK] why the chain is refused, for the server's one-time log line
+    // why the chain is refused, for the server's one-time log line
     const auto refuse = [&](std::string why) {
         if (reason) {
             *reason = std::move(why);
@@ -945,7 +944,7 @@ llama_token common_sampler_sample(struct common_sampler * gsmpl, struct llama_co
         }
     }
 
-    // [TAG_BACKEND_TOPK] check mode: the same chain state applied to the full logits must give the same result
+    // check mode: the same chain state applied to the full logits must give the same result
     llama_sampler * chain_ref = nullptr;
     if (gsmpl->backend_topk > 0 && common_sampler::backend_topk_check() == 1 && cur_p.size < (size_t) llama_vocab_n_tokens(llama_model_get_vocab(llama_get_model(ctx)))) {
         chain_ref = llama_sampler_clone(chain);
@@ -1010,7 +1009,7 @@ std::vector<llama_token> common_sampler_sample_and_accept_n(struct common_sample
     std::vector<llama_token> result;
     result.reserve(idxs.size());
 
-    // upstream #29638 (ticket 0101): an accepted end-of-generation token ends the round, so no draft token after it is accepted
+    // upstream #29638: an accepted end-of-generation token ends the round, so no draft token after it is accepted
     // and no bonus row is sampled; it becomes the round's last token, as if the target had sampled it there
     const llama_vocab * vocab = llama_model_get_vocab(llama_get_model(ctx));
 
@@ -1047,7 +1046,6 @@ std::vector<llama_token> common_sampler_sample_and_accept_n(struct common_sample
     return common_sampler_sample_and_accept_n(gsmpl, ctx, idxs, draft, grammar_first);
 }
 
-// [TAG_SPEC_COUPLED]
 bool common_sampler_coupled_ok(const struct common_sampler * gsmpl) {
     if (!gsmpl || gsmpl->params.mirostat != 0 || gsmpl->params.backend_sampling) {
         return false;
@@ -1110,7 +1108,6 @@ llama_token common_sampler_coupled_pick(struct common_sampler * gsmpl, const lla
     return cur_p.data[cur_p.selected].id;
 }
 
-// [TAG_SPEC_REJECTION] (ticket 0069)
 bool common_sampler_rejection_ok(const struct common_sampler * gsmpl) {
     return common_sampler_coupled_ok(gsmpl);
 }
@@ -1228,7 +1225,7 @@ llama_token common_sampler_rejection_draft(struct common_sampler * copy, struct 
         return LLAMA_TOKEN_NULL;
     }
     if (gen != nullptr) {
-        // [TAG_SPEC_REJECTION_PIPE] the draft's own stream, the same kind of draw as the chain's dist (ticket 0070)
+        // the draft's own stream, the same kind of draw as the chain's dist
         std::uniform_real_distribution<double> dist(0.0f, 1.0f);
         u = dist(*gen);
     } else if (rng == nullptr || !llama_sampler_chain_draw_uniform(rng->chain, &u)) {
@@ -1291,7 +1288,7 @@ llama_token common_sampler_rejection_step(const llama_token_data * p, size_t n_p
 std::vector<llama_token> common_sampler_sample_and_accept_n_rejection(struct common_sampler * gsmpl, struct llama_context * ctx,
         const std::vector<int> & idxs, const llama_tokens & draft, const std::vector<common_rejection_q> & q, int * n_step, int * n_accepted) {
     GGML_RT_SCOPE("cs.accept_n_rejection");
-    // [TAG_SPEC_REJECTION_PIPE] idxs.size() == draft.size(): no bonus row (ticket 0070)
+    // idxs.size() == draft.size(): no bonus row
     GGML_ASSERT((idxs.size() == draft.size() + 1 || idxs.size() == draft.size()) && "idxs.size() must be draft.size() + 1 or draft.size()");
     GGML_ASSERT(q.size() == draft.size() && "one q row per drafted token");
 
@@ -1316,7 +1313,7 @@ std::vector<llama_token> common_sampler_sample_and_accept_n_rejection(struct com
         llama_token id = LLAMA_TOKEN_NULL;
         bool accepted = false;
 
-        // [TAG_SPEC_REJECTION_PIPE] a row whose q lacks its drafted token (not sampled from q) takes sample-and-match
+        // a row whose q lacks its drafted token (not sampled from q) takes sample-and-match
         if (common_sampler_rejection_row_ok(gsmpl) && common_rejection_q_of(q[i], draft[i]) > 0.0f) {
             llama_synchronize(ctx);
 
@@ -1351,7 +1348,7 @@ std::vector<llama_token> common_sampler_sample_and_accept_n_rejection(struct com
 
         result.push_back(id);
 
-        // upstream #29638 (ticket 0101): an accepted end-of-generation token ends the round (see common_sampler_sample_and_accept_n)
+        // upstream #29638: an accepted end-of-generation token ends the round (see common_sampler_sample_and_accept_n)
         if (!accepted || llama_vocab_is_eog(vocab, id)) {
             break;
         }

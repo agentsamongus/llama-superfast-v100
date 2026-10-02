@@ -1292,7 +1292,6 @@ struct common_init_result::impl {
     std::vector<common_sampler_ptr> samplers;
     std::vector<llama_sampler_seq_config> samplers_seq_config;
 
-    // [TAG_BACKEND_TOPK]
     int32_t backend_topk_n = 0;
     std::vector<llama_sampler_ptr> backend_topk;
     std::vector<llama_sampler_seq_config> backend_topk_seq_config;
@@ -1405,7 +1404,7 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
         cparams.samplers   = pimpl->samplers_seq_config.data();
         cparams.n_samplers = pimpl->samplers_seq_config.size();
     } else if (params.backend_topk) {
-        // [TAG_BACKEND_TOPK] registered once, with the context: a later registration would reserve the scheduler again
+        // registered once, with the context: a later registration would reserve the scheduler again
         pimpl->backend_topk_n = common_sampler_backend_topk_n(vocab, params.sampling);
         if (pimpl->backend_topk_n > 0) {
             pimpl->backend_topk.resize(cparams.n_seq_max);
@@ -1756,7 +1755,7 @@ struct llama_context_params common_context_params_to_llama(const common_params &
     cparams.n_ctx             = params.n_ctx;
     cparams.n_seq_max         = params.n_parallel;
     cparams.n_rs_seq          = params.speculative.need_n_rs_seq();
-    // [TAG_SPEC_REJECTION_ADAPT] (ticket 0073) the rollback covers the deepest adaptive draft
+    // the rollback covers the deepest adaptive draft
     if (cparams.n_rs_seq > 0) {
         cparams.n_rs_seq = std::max(cparams.n_rs_seq, (uint32_t) common_speculative_rejection_nmax());
     }
@@ -2290,7 +2289,7 @@ bool common_prompt_batch_decode(
     return true;
 }
 
-// ticket 0121: checkpoint allocator and pool of checkpoint buffers (see common.h)
+// checkpoint allocator and pool of checkpoint buffers (see common.h)
 void * common_ckpt_alloc(size_t bytes) {
 #ifdef _WIN32
     void * p = malloc(bytes ? bytes : 1);

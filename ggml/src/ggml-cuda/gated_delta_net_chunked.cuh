@@ -1,6 +1,6 @@
 #pragma once
 
-// Chunked gated-delta-net prefill on the Volta tensor cores (ticket T5, LLAMA_GDN_CHUNKED, default on).
+// Chunked gated-delta-net prefill on the Volta tensor cores (LLAMA_GDN_CHUNKED, default on).
 //
 // The token-serial kernel runs S_t = g_t S_{t-1} + k_t u_t^T with u_t = beta_t (v_t - g_t S_{t-1}^T k_t) and
 // o_t = scale S_t^T q_t one token at a time. Over a chunk of C = 64 tokens with b_t the cumulative log decay

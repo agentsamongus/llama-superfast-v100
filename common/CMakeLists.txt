@@ -136,7 +136,7 @@ set_target_properties(${TARGET} PROPERTIES
 target_include_directories(${TARGET} PUBLIC .)
 target_link_libraries     (${TARGET} PUBLIC vendor::nlohmann vendor::sheredom)
 
-# ticket 0093: the draft vocabulary ranking files (models/draft-vocab-*.txt) for LLAMA_SPEC_DRAFT_VOCAB's default
+# the draft vocabulary ranking files (models/draft-vocab-*.txt) for LLAMA_SPEC_DRAFT_VOCAB's default
 set_property(SOURCE speculative.cpp APPEND PROPERTY COMPILE_DEFINITIONS LLAMA_SPEC_DRAFT_VOCAB_DIR="${PROJECT_SOURCE_DIR}/models")
 target_compile_features   (${TARGET} PUBLIC cxx_std_17)
 

@@ -15,7 +15,7 @@ TARGET=$MODELS/Qwen3.8-27B-UD-Q4_K_XL.gguf
 MTP=$MODELS/mtp-Qwen3.8-27B-Q4_0.gguf
 DFLASH=$MODELS/Qwen3.8-27B-DFlash2-Q4_K_M.gguf
 
-# rejection sampling and the 98,304-row draft vocabulary are the engine's defaults (ticket V5); only the model file's path is set here
+# rejection sampling and the 98,304-row draft vocabulary are the engine's defaults; only the model file's path is set here
 export LLAMA_SPEC_DRAFT_VOCAB_FILE=$ROOT/models/draft-vocab-qwen3.8-27b.txt
 
 case "$MODE" in

@@ -1128,7 +1128,7 @@ struct ggml_tensor * llama_model_loader::borrow_shared_tensor(const LLM_TN_IMPL 
 
     const std::string name = tn.str();
 
-    // [TAG_DRAFT_TARGET_HEAD] LLAMA_SPEC_DRAFT_TARGET_HEAD=1 (ticket 0082, default off): a draft loaded with its target
+    // LLAMA_SPEC_DRAFT_TARGET_HEAD=1 (default off): a draft loaded with its target
     // uses the target's output.weight even when its own file carries one (the 27B MTP file's head is a Q3_K copy of the
     // target's Q6_K head); the file's copy is skipped, neither allocated nor read
     const char * e_head = tn.tensor == LLM_TENSOR_OUTPUT ? getenv("LLAMA_SPEC_DRAFT_TARGET_HEAD") : nullptr;

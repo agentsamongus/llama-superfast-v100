@@ -72,40 +72,40 @@ struct common_speculative_draft_params {
     // the generated draft from the last _draft() call
     llama_tokens * result;
 
-    // [TAG_SPEC_COUPLED] the target's sampler, at the row that samples the first draft token (LLAMA_SPEC_COUPLED:
+    // the target's sampler, at the row that samples the first draft token (LLAMA_SPEC_COUPLED:
     // the MTP draft picks each token through a copy of it)
     struct common_sampler * smpl_tgt = nullptr;
 
-    // [TAG_SPEC_REJECTION] with LLAMA_SPEC_REJECTION, the MTP draft samples each token from its distribution q through
+    // with LLAMA_SPEC_REJECTION, the MTP draft samples each token from its distribution q through
     // a copy of smpl_tgt, drawing from smpl_tgt's own generator, and puts q here, one row per drafted token (an empty
     // row where it could not sample: see common_rejection_q). nullptr: the draft picks as without the toggle
     std::vector<std::vector<llama_token_data>> * q = nullptr;
 
-    // [TAG_SPEC_REJECTION_PIPE] with q (ticket 0070): the draft's uniforms come from this generator instead of smpl_tgt's
+    // with q: the draft's uniforms come from this generator instead of smpl_tgt's
     std::mt19937 * q_rng = nullptr;
 
-    // [TAG_SPEC_ADAPT_WIDTH] (ticket 0120) with the DFlash draft: keep only the first n_cap drafted tokens (0: no cap)
+    // with the DFlash draft: keep only the first n_cap drafted tokens (0: no cap)
     int32_t n_cap = 0;
 };
 
-// [TAG_SPEC_COUPLED] coupled drafting (ticket 0058), LLAMA_SPEC_COUPLED=1, default off: the MTP draft picks each
+// coupled drafting, LLAMA_SPEC_COUPLED=1, default off: the MTP draft picks each
 // token from its candidates through a copy of the target's sampler, with the draw the target's sample of that row
 // will take, instead of its argmax
 bool common_speculative_coupled();
 
-// [TAG_SPEC_REJECTION] rejection sampling (ticket 0069), LLAMA_SPEC_REJECTION, default on (0: off; tickets 0093 and V5): the MTP draft samples its
+// rejection sampling, LLAMA_SPEC_REJECTION, default on (0: off): the MTP draft samples its
 // tokens from its own distribution and the verify keeps the target's output distribution with the rejection step
 // (common_sampler_sample_and_accept_n_rejection). LLAMA_SPEC_REJECTION_TEMP: the draft's temperature (default: the
 // target's). changes seeded outputs, not their distribution
 bool  common_speculative_rejection();
 float common_speculative_rejection_temp();
 
-// [TAG_SPEC_REJECTION_ADAPT] (ticket 0073) the adaptive draft length under rejection sampling, LLAMA_SPEC_REJECTION_ADAPT=1
+// the adaptive draft length under rejection sampling, LLAMA_SPEC_REJECTION_ADAPT=1
 // with LLAMA_SPEC_REJECTION=1, default off: a request that takes the rejection step drafts up to
 // LLAMA_SPEC_REJECTION_NMAX tokens (default 3, clamped to 1..3, and at least --spec-draft-n-max), and drafts token
 // k+1 only while the product of the draft's q over its k drafted tokens is at least LLAMA_SPEC_REJECTION_CUTOFF
 // (default 0.5 = c / T * E[A]: one more drafted and verified token costs c = 5.0 ms against a round of T = 25 ms
-// yielding E[A] = 2.56 tokens, ticket 0073's step 0). The decision reads only the tokens already drafted, never the
+// yielding E[A] = 2.56 tokens). The decision reads only the tokens already drafted, never the
 // next one, so the output distribution is kept. the returned depth is 0 when off; the target's n_rs_seq covers it
 int32_t common_speculative_rejection_nmax();
 float   common_speculative_rejection_cutoff();
@@ -118,7 +118,7 @@ void common_speculative_begin(common_speculative * spec, llama_seq_id seq_id, co
 // process the batch and update the internal state of the speculative context
 bool common_speculative_process(common_speculative * spec, const llama_batch & batch);
 
-// (ticket 0101) optionally call before prefilling a prompt: it ends at position n_end (exclusive), and marks are the positions at
+// optionally call before prefilling a prompt: it ends at position n_end (exclusive), and marks are the positions at
 // which a checkpoint may be taken (a checkpoint holds the state before that position). A draft whose attention reaches back a
 // fixed window (DFlash2's sliding window) then injects only the prompt positions a later draft can see: those within the window
 // before n_end or before any mark. The plan holds until common_speculative_begin
@@ -127,7 +127,7 @@ void common_speculative_prefill_plan(common_speculative * spec, llama_seq_id seq
 // generate drafts for the sequences specified with `common_speculative_get_draft_params`
 void common_speculative_draft(common_speculative * spec);
 
-// [TAG_SPEC_PIPELINE] pipelined drafting (ticket 0055), for a single MTP implementation without chained heads
+// pipelined drafting, for a single MTP implementation without chained heads
 // enable it; false when the implementation does not support it
 bool common_speculative_pipe_enable(common_speculative * spec);
 // the draft's probability of each token drafted since the last common_speculative_draft, chains included
@@ -135,14 +135,14 @@ const std::vector<float> * common_speculative_pipe_probs(const common_speculativ
 // the catch-up of one verified chunk of n tokens at pos0 (the target's current outputs hold its rows), plus an extra
 // token after it (LLAMA_TOKEN_NULL for none) to chain from; clears the draft cache from pos0 first
 bool common_speculative_pipe_process(common_speculative * spec, llama_seq_id seq_id, const llama_token * toks, int32_t n, llama_pos pos0, llama_token extra);
-// [TAG_SPEC_REJECTION_PIPE] (ticket 0070) after a catch-up: the next chain's first known token pairs with the target's
+// after a catch-up: the next chain's first known token pairs with the target's
 // row for the last accepted token, as the serial loop's draft pairs its first token
 bool common_speculative_pipe_rebase(common_speculative * spec, llama_seq_id seq_id);
 // continue the chain: feed known tokens from pos (the first pairs with the kept hidden row), then draft n_new tokens.
-// [TAG_SPEC_COUPLED] with coupled (a copy of the target's sampler at the first new token's row), each new token is
+// with coupled (a copy of the target's sampler at the first new token's row), each new token is
 // picked from the draft's candidates through it (common_sampler_coupled_pick, the draft's argmax where that returns
 // no token) and accepted into it; the draft's probability of the picked token goes to common_speculative_pipe_probs
-// [TAG_SPEC_REJECTION_PIPE] with q and q_rng as well (ticket 0070), each new token is instead sampled from the draft's
+// with q and q_rng as well, each new token is instead sampled from the draft's
 // distribution through coupled (common_sampler_rejection_draft) with a draw from q_rng, its row appended to q (an
 // empty row where it could not sample), and the draft's probability of it goes to common_speculative_pipe_probs
 bool common_speculative_pipe_chain(common_speculative * spec, llama_seq_id seq_id, const llama_token * known, int32_t n_known, llama_pos pos, int32_t n_new, llama_tokens & out,

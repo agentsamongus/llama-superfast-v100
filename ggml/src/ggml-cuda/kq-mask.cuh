@@ -2,7 +2,7 @@
 
 #include "common.cuh"
 
-// [TAG_KQ_MASK_DEVICE] ticket T3: the KQ mask of one causal sequence built on the device from a mirror of the KV
+// the KQ mask of one causal sequence built on the device from a mirror of the KV
 // cells (llama_kv_cache::set_input_kq_mask_device has the rule and the mirror's layout)
 
 #define KQM_MAX_TOKENS 64  // rows (ubatch tokens) per mask

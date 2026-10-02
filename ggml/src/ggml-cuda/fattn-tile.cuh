@@ -479,7 +479,7 @@ static __device__ __forceinline__ void flash_attn_tile_load_tile(
     ggml_cuda_unroll<5>{}(load);
 }
 
-// ticket 0088: the same two tile loaders reading a BF16 K/V cache directly. Each element is converted exactly as
+// the same two tile loaders reading a BF16 K/V cache directly. Each element is converted exactly as
 // launch_fattn's separate to_fp16 pass (convert_unary<nv_bfloat16, half>) converted it, __float2half(__bfloat162float(x)),
 // so the tile holds the same halves and the kernel's arithmetic is unchanged; only the conversion pass and its f16 copy go.
 static __device__ __forceinline__ half2 flash_attn_tile_bf16_to_h2(const nv_bfloat162 x) {
@@ -1262,7 +1262,7 @@ static __global__ void flash_attn_tile(
 #endif // FLASH_ATTN_AVAILABLE
 }
 
-// ticket 0088: with a BF16 K/V cache the tile kernel can read the cache directly instead of launch_fattn first converting
+// with a BF16 K/V cache the tile kernel can read the cache directly instead of launch_fattn first converting
 // all of K and V to an f16 copy (a pass that grows with the context: 4.5 ms per 4-token verify at 16K on the 27B). The loaders
 // convert each element exactly as that pass did, and the split is sized from the f16 kernel's occupancy, so the grid, the
 // per-block KV ranges and every sum are the same: bit-identical. Head sizes 128 and 256 only (to bound compile time).

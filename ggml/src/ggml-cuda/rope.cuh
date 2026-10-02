@@ -10,7 +10,7 @@ void ggml_cuda_op_rope_fused(ggml_backend_cuda_context & ctx, ggml_tensor * dst,
 
 void ggml_cuda_op_rms_norm_mul_rope_fused(ggml_backend_cuda_context & ctx, ggml_tensor * rms_norm, ggml_tensor * mul, ggml_tensor * rope, ggml_tensor * set_rows);
 
-// ticket 0056, LLAMA_FOLD_NORM_ROPE: RMS_NORM -> MUL by the weight -> ROPE multi (M-RoPE, IMRoPE), F32, one launch
+// LLAMA_FOLD_NORM_ROPE: RMS_NORM -> MUL by the weight -> ROPE multi (M-RoPE, IMRoPE), F32, one launch
 void ggml_cuda_op_rms_norm_mul_rope_multi(ggml_backend_cuda_context & ctx, const ggml_tensor * rms_norm,
         const ggml_tensor * mul, ggml_tensor * rope);
 

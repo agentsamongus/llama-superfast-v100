@@ -1,8 +1,8 @@
-# llama.cpp for the Tesla V100
+# llama-superfast-v100: llama.cpp for the Tesla V100
 
-This is a fork of llama.cpp with CUDA kernel and server changes for the Tesla V100 (Volta, `sm_70`). It runs **Qwen3.8-27B on a single V100 32 GB** with speculative decoding, at the speeds below. The same engine also serves Qwen3.8-Flash-Next across two V100s; that work is still in progress and is not documented here yet.
+This is a fork of llama.cpp with CUDA kernel and server changes for the Tesla V100 (Volta, `sm_70`). It runs **Qwen3.8-27B on a single V100 32 GB** with speculative decoding, at the speeds below, and it has run a coding agent on real repositories for seven hours straight without a restart. The same engine also serves Qwen3.8-Flash-Next across two V100s; that path is in the tree but is not documented here.
 
-Everything below the horizontal rule is upstream llama.cpp's own README. The build, the model files, the launch lines and the detailed measurements for the 27B are in [`README-27B.md`](README-27B.md).
+Everything below the horizontal rule is upstream llama.cpp's own README. The build, the model files, the launch lines, the full measurements, how to reproduce them, the tests, the fork statement and the licences are in [`README-27B.md`](README-27B.md).
 
 ## What it runs
 
@@ -16,25 +16,28 @@ All figures are from one V100 32 GB PCIe, single stream, at the settings above, 
 
 | | Result |
 |---|---|
+| Seven hours of agentic work on DeepSWE tasks (17 tasks from the public catalogue, real Go, TypeScript, Python and Rust repositories, a coding agent with context compaction near 98K tokens) | 99.4 tok/s mean decode over 3.0 million generated tokens, 7 of 17 resolved, 52 context compactions survived, no restart and no error on either of two servers |
 | Coding-agent tasks, starting from an empty context (runs end at 22K to 32K tokens) | 126.6 tok/s mean decode, 8 of 8 runs passed their tests |
 | The same tasks with the repository loaded into context first (about 72K tokens before the task starts) | 111.9 tok/s mean decode |
 | HumanEval, problems 0 to 31 | 107.7 tok/s mean steady decode, 32 of 32 passed, 3.7 tokens accepted per round |
 | Prompt processing, cold, fixed prompt | about 930 tok/s for a 16K prompt, about 740 tok/s for a 64K prompt |
-| Draft acceptance on the coding-agent tasks | 0.61 to 0.68 per drafted token, with a 7-token draft window |
+| Draft acceptance | 0.61 to 0.68 per drafted token on the coding-agent tasks, 0.52 on the DeepSWE tasks, with a 7-token draft window |
+
+The DeepSWE run is the longest thing we have done with it: two servers, one per card, 3,800 requests over seven hours, every task running up to the compaction trigger one to nine times and carrying on. The misses were the agent's, not the engine's: the unresolved tasks decoded at the same speed and several were a few verifier tests short.
 
 The coding-agent tasks are four ordinary feature tasks on a small Python web application, run by a coding agent that edits files and runs the tests, each once from an empty context and once with the repository preloaded. Every run is one sample at temperature 1.0, so turn counts and paths differ from run to run; the figures are typical rather than best-case.
 
-One figure that is not from a benchmark: on the author's own day-to-day coding traffic over about 21,600 rounds, acceptance was 0.46 per drafted token and 2.6 tokens per round, lower than on the tasks above. We do not yet know why, and it is being looked at.
+One figure that is not from a benchmark: on the author's own day-to-day coding traffic over about 21,600 rounds, acceptance was 0.46 per drafted token and 2.6 tokens per round, lower than on the tasks above. We have not measured why.
 
-A comparison with NInfer on the same tasks is in `README-27B.md`. In short, this fork decodes about twice as fast on those tasks, and NInfer's prompt processing is faster.
+A comparison with NInfer on the same tasks is in `README-27B.md`. In short, this fork decodes about twice as fast on those tasks; on prompt processing the two are now close on agent traffic, and on a cold 16K prompt this fork is past NInfer's published figure for the same card (about 930 against 833 tok/s).
 
 ## What was changed
 
-About twenty changes to the CUDA kernels and the server, made over several rounds of work on this one card. Each was kept only if it was faster on the same test and produced the same text, or, where a numeric path changed, stayed within a KL-divergence bound against the previous build. Changes that did not pay for themselves were measured and left out. The list, with what each was worth, is in `README-27B.md`.
+About thirty changes to the CUDA kernels and the server, made over several rounds of work on this one card: tensor-core products for the few-token matrix-vector step on quantized weights, fused decode kernels for the gated-delta layers, attention kernels that read the cache once per verification step and stream at depth, a chunked tensor-core prefill, and a speculative-decoding loop with rejection sampling, a draft vocabulary and pipelined drafting. Each was kept only if it was faster on the same test and produced the same text, or, where a numeric path changed, stayed within a KL-divergence bound against the previous build. Changes that did not pay for themselves were measured and left out. The list, with what each was worth, is in `README-27B.md`.
 
 ## Limits
 
-- Prompt processing is the slow side.
+- Context is 131,072 tokens on one card; a 262,144-token f16 cache does not fit beside the weights. On long agentic tasks that is the limit that binds (every DeepSWE task compacted at least once).
 - The CUDA kernels were written and tested for the V100 only. Other GPUs are untested and are not expected to work.
 - One request at a time. Concurrent requests are untested.
 - The draft vocabulary is tuned for English and code; acceptance on Chinese is low.

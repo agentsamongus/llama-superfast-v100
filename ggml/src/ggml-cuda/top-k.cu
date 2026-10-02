@@ -36,7 +36,7 @@ static void top_k_cub(ggml_cuda_pool & pool,
                          ncols, k, env));
 }
 
-// Ticket S2 (LLAMA_TOPK_TILED, default OFF: measured slower than the CUB chain, +20 us a call at 248,320 logits; 1 = this kernel): k <= 32 of a long row without CUB's sort-like chain (its three
+// LLAMA_TOPK_TILED, default OFF: measured slower than the CUB chain, +20 us a call at 248,320 logits; 1 = this kernel: k <= 32 of a long row without CUB's sort-like chain (its three
 // DeviceTopKKernel passes, the last filter and, in the sampler, the gathers cost 4 launches and about 20 us a row at 248,320 logits).
 // Kernel A: each block takes a contiguous slice of TOPK_TILE_IPT*TOPK_TILE_THREADS logits, k rounds of a block-wide arg-max over
 // 64-bit keys (the logit's order-preserving bits, then the inverted index, so equal logits rank lowest index first) and writes its
@@ -328,7 +328,7 @@ void ggml_cuda_op_top_k(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     ggml_cuda_pool & pool  = ctx.pool();
 #ifdef CUB_TOP_K_AVAILABLE
     if (src0->nb[1] % sizeof(float) == 0 && top_k_tiled(pool, src0_d, dst_d, ncols, nrows, (int) k, src0->nb[1]/sizeof(float), stream)) {
-        return; // ticket S2
+        return; //
     }
     // TODO: Switch to `DeviceSegmentedTopK` for multi-row TopK once implemented
     // https://github.com/NVIDIA/cccl/issues/6391

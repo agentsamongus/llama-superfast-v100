@@ -1,4 +1,4 @@
-// Differential test for the qwen4exp QSA compact selected-KV attention (ticket 0007).
+// Differential test for the qwen4exp QSA compact selected-KV attention.
 //
 // Reference: dense flash attention over the whole cache view with the QSA mask
 // (the cell's own mask where top_k names it, -inf elsewhere), which is what
@@ -339,11 +339,11 @@ int main() {
         { "decode-no-pad",      8192, 8192,   1, 1,  2048, 7000, 256 }, // width already aligned
         { "tail-boundary",      4096, 4096,   1, 3,  2051, 2047, 256 }, // queries straddle a 4-token block
         { "verify-3-long",     16384, 16384,  1, 3,  2051, 16000, 256 }, // most cells unselected
-        // ggml_qsa_select output: repeats of the first cell masked by top_k_bias (ticket 0018)
+        // ggml_qsa_select output: repeats of the first cell masked by top_k_bias
         { "decode-repeats",     4096, 4096,   1, 1,  2051, 3000, 256, 3 },   // tail slots unused
         { "verify-3-repeats",   4096, 4096,   1, 3,  2051, 1500, 256, 700 }, // few blocks visible
         { "verify-2-str-rep",   4096, 6144,   2, 2,  2051, 3200, 256, 2 },
-        // the union form's own shapes: adjacent queries select mostly the same cells (ticket 0030)
+        // the union form's own shapes: adjacent queries select mostly the same cells
         { "union-3-overlap",   16384, 16384,  1, 3,  2051, 16000, 256, 0, 64 },
         { "union-3-same",      16384, 16384,  1, 3,  2051, 16000, 256, 0, 0 },    // union = one selection + tails
         { "union-3-rep",       16384, 16384,  1, 3,  2051, 1500,  256, 700, 32 }, // repeats inside the union

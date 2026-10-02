@@ -495,7 +495,7 @@ bool llm_graph_input_attn_kv::can_reuse(const llm_graph_params & params) {
     bool res = true;
 
     res &= self_k_idxs->ne[0] == params.ubatch.n_tokens;
-  //res &= self_v_idxs->ne[0] == params.ubatch.n_tokens; // TODO: need to move this to the unified cache and check there
+  // res &= self_v_idxs->ne[0] == params.ubatch.n_tokens; // TODO: need to move this to the unified cache and check there
 
     res &= can_reuse_kq_mask(self_kq_mask, mctx, params.ubatch, params.cparams);
 
@@ -663,7 +663,7 @@ bool llm_graph_input_attn_kv_iswa::can_reuse(const llm_graph_params & params) {
     // base tensors may not be allocated if there are no non-SWA attention layers
     if (self_k_idxs && self_k_idxs->buffer) {
         res &= self_k_idxs->ne[0] == params.ubatch.n_tokens;
-      //res &= self_v_idxs->ne[0] == params.ubatch.n_tokens; // TODO: need to move this to the unified cache and check there
+      // res &= self_v_idxs->ne[0] == params.ubatch.n_tokens; // TODO: need to move this to the unified cache and check there
     }
 
     if (self_kq_mask && self_kq_mask->buffer) {
@@ -673,7 +673,7 @@ bool llm_graph_input_attn_kv_iswa::can_reuse(const llm_graph_params & params) {
     // swa tensors may not be allocated if there are no SWA attention layers
     if (self_k_idxs_swa && self_k_idxs_swa->buffer) {
         res &= self_k_idxs_swa->ne[0] == params.ubatch.n_tokens;
-      //res &= self_v_idxs_swa->ne[0] == params.ubatch.n_tokens; // TODO: need to move this to the unified cache and check there
+      // res &= self_v_idxs_swa->ne[0] == params.ubatch.n_tokens; // TODO: need to move this to the unified cache and check there
     }
 
     if (self_kq_mask_swa && self_kq_mask_swa->buffer) {
@@ -1092,7 +1092,7 @@ void llm_graph_input_mem_hybrid::set_input(const llama_ubatch * ubatch) {
     mctx->get_attn()->set_input_v_idxs(inp_attn->self_v_idxs, ubatch);
 
     // the mask is left unallocated when the graph only stores K/V without attending
-    // (e.g. the MTP draft's catch-up, [TAG_MTP_CATCHUP_NOREAD])
+    // (e.g. the MTP draft's catch-up,)
     if (inp_attn->self_kq_mask->buffer) {
         mctx->get_attn()->set_input_kq_mask(inp_attn->self_kq_mask, ubatch, cparams.causal_attn);
     }
@@ -1126,7 +1126,7 @@ bool llm_graph_input_mem_hybrid::can_reuse(const llm_graph_params & params) {
     bool res = true;
 
     res &= inp_attn->self_k_idxs->ne[0] == params.ubatch.n_tokens;
-  //res &= inp_attn->self_v_idxs->ne[0] == params.ubatch.n_tokens; // TODO: need to move this to the unified cache and check there
+  // res &= inp_attn->self_v_idxs->ne[0] == params.ubatch.n_tokens; // TODO: need to move this to the unified cache and check there
 
     res &= can_reuse_kq_mask(inp_attn->self_kq_mask, mctx->get_attn(), params.ubatch, params.cparams);
 
@@ -1248,7 +1248,7 @@ bool llm_graph_input_mem_hybrid_iswa::can_reuse(const llm_graph_params & params)
     // base tensors may not be allocated if there are no non-SWA attention layers
     if (inp_attn->self_k_idxs && inp_attn->self_k_idxs->buffer) {
         res &= inp_attn->self_k_idxs->ne[0] == params.ubatch.n_tokens;
-      //res &= inp_attn->self_v_idxs->ne[0] == params.ubatch.n_tokens; // TODO: need to move this to the unified cache and check there
+      // res &= inp_attn->self_v_idxs->ne[0] == params.ubatch.n_tokens; // TODO: need to move this to the unified cache and check there
     }
 
     res &= can_reuse_kq_mask(inp_attn->self_kq_mask, attn_ctx->get_base(), params.ubatch, params.cparams);
@@ -1256,7 +1256,7 @@ bool llm_graph_input_mem_hybrid_iswa::can_reuse(const llm_graph_params & params)
     // swa tensors may not be allocated if there are no SWA attention layers
     if (inp_attn->self_k_idxs_swa && inp_attn->self_k_idxs_swa->buffer) {
         res &= inp_attn->self_k_idxs_swa->ne[0] == params.ubatch.n_tokens;
-      //res &= inp_attn->self_v_idxs_swa->ne[0] == params.ubatch.n_tokens; // TODO: need to move this to the unified cache and check there
+      // res &= inp_attn->self_v_idxs_swa->ne[0] == params.ubatch.n_tokens; // TODO: need to move this to the unified cache and check there
     }
 
     res &= can_reuse_kq_mask(inp_attn->self_kq_mask_swa, attn_ctx->get_swa(), params.ubatch, params.cparams);
@@ -2165,7 +2165,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
         cb(weights, "ffn_moe_weights_scaled", il);
     }
 
-    //call early so that topk-moe can be used
+    // call early so that topk-moe can be used
     ggml_build_forward_expand(gf, weights);
 
     cur = ggml_reshape_3d(ctx0, cur, n_embd, 1, n_tokens);
@@ -2491,7 +2491,7 @@ ggml_tensor * llm_graph_context::build_inp_out_ids() const {
     //       but this would make the graph topology depend on the number of output tokens, which can interfere with
     //       features that require constant topology such as pipeline parallelism
     //       ref: https://github.com/ggml-org/llama.cpp/pull/14275#issuecomment-2987424471
-    //if (n_outputs < n_tokens) {
+    // if (n_outputs < n_tokens) {
     //    return nullptr;
     //}
 
@@ -2540,7 +2540,7 @@ ggml_tensor * llm_graph_context::build_inp_cross_embd() const {
 
     // if we have the output embeddings from the encoder, use them directly
     // TODO: needs more work to be correct, for now just use the tensor shape
-    //if (cross->t_embd) {
+    // if (cross->t_embd) {
     //    cur = ggml_view_tensor(ctx0, cross->t_embd);
 
     //    return cur;
@@ -2793,7 +2793,7 @@ ggml_tensor * llm_graph_context::build_attn(
     // [TAG_NO_CACHE_PAD]
     // TODO: if ubatch.equal_seqs() == true, we can split the three tensors below into ubatch.n_seqs_unq streams
     //       but it might not be worth it: https://github.com/ggml-org/llama.cpp/pull/15636
-    //assert(!ubatch.equal_seqs() || (k_cur->ne[3] == 1 && k_cur->ne[3] == ubatch.n_seqs_unq));
+    // assert(!ubatch.equal_seqs() || (k_cur->ne[3] == 1 && k_cur->ne[3] == ubatch.n_seqs_unq));
 
     ggml_tensor * q = q_cur;
     ggml_tensor * k = k_cur;
@@ -2807,7 +2807,7 @@ ggml_tensor * llm_graph_context::build_attn(
     }
 
     if (wo_b) {
-        //cb(cur, "kqv_wo", il);
+        // cb(cur, "kqv_wo", il);
     }
 
     if (wo_b) {
@@ -2842,7 +2842,7 @@ static std::unique_ptr<llm_graph_input_attn_kv> build_attn_inp_kv_impl(
     return inp;
 }
 
-// [TAG_KQ_MASK_DEVICE] ticket T3: a decode-sized mask of a cache with a device cell mirror is placed on that device and
+// a decode-sized mask of a cache with a device cell mirror is placed on that device and
 // built there by llama_kv_cache::set_input_kq_mask, instead of being written on the host and copied
 static void kq_mask_place(ggml_backend_sched_t sched, ggml_tensor * mask, const llama_kv_cache_context * mctx, const llama_cparams & cparams) {
     if (mask == nullptr || mctx == nullptr) {
@@ -3178,7 +3178,7 @@ ggml_tensor * llm_graph_context::build_attn(
     }
 
     if (wo_b) {
-        //cb(cur, "kqv_wo", il);
+        // cb(cur, "kqv_wo", il);
     }
 
     if (wo_b) {
@@ -3304,7 +3304,7 @@ ggml_tensor * llm_graph_context::build_attn(
     }
 
     if (wo_b) {
-        //cb(cur, "kqv_wo", il);
+        // cb(cur, "kqv_wo", il);
     }
 
     if (wo_b) {
@@ -3873,7 +3873,7 @@ void llm_graph_context::build_pooling(
     ggml_tensor * inp = res->t_embd;
 
     //// find result_norm tensor for input
-    //for (int i = ggml_graph_n_nodes(gf) - 1; i >= 0; --i) {
+    // for (int i = ggml_graph_n_nodes(gf) - 1; i >= 0; --i) {
     //    inp = ggml_graph_node(gf, i);
     //    if (strcmp(inp->name, "result_norm") == 0 || strcmp(inp->name, "result_embd") == 0) {
     //        break;
@@ -4011,7 +4011,7 @@ void llm_graph_context::build_sampling() const {
             ggml_tensor * logits_seq = ggml_view_1d(ctx0, logits_t, logits_t->ne[0], rows[i] * logits_t->nb[1]);
             ggml_format_name(logits_seq, "logits_seq_%d_%u", seq_id, i);
 
-            // [TAG_DRAFT_VOCAB] logits over a subset of the vocabulary start with the subset's ids as the candidates, so
+            // logits over a subset of the vocabulary start with the subset's ids as the candidates, so
             // the samplers return token ids
             struct llama_sampler_data data = {
                 /*.logits       =*/ logits_seq,

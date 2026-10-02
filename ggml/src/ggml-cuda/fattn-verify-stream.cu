@@ -1,10 +1,10 @@
-// tickets S1 step 3 and T4: launcher and route of the streaming verify kernel (fattn-verify-stream.cuh)
+// launcher and route of the streaming verify kernel (fattn-verify-stream.cuh)
 #include "common.cuh"
 #include "fattn-common.cuh"
 #include "fattn-verify-stream.cuh"
 
 // The verify and draft-step call (1 to 8 tokens, a GQA group of 6, D = 256) over an F16 cache of at least LLAMA_FATTN_VERIFY_STREAM keys
-// (default 4096; -1 or 0: off, the mma routes of tickets 0126 / S1 / T1 / T7 are then used).
+// (default 4096; -1 or 0: off, the mma routes are then used).
 bool ggml_cuda_fattn_verify_stream_applies(const ggml_tensor * dst) {
     static const int min_keys = [] { const char * e = getenv("LLAMA_FATTN_VERIFY_STREAM"); return e ? atoi(e) : 4096; }();
     if (min_keys <= 0 || dst->op != GGML_OP_FLASH_ATTN_EXT) {
@@ -51,7 +51,7 @@ void ggml_cuda_flash_attn_ext_verify_stream(ggml_backend_cuda_context & ctx, ggm
     const int id  = ggml_cuda_get_device();
     const int nsm = ggml_cuda_info().devices[id].nsm;
 
-    // ticket U2b: by default the PV warps load and store the last 8 of the 16 K rows per lane (KP = 8; the same mma sequence and
+    // by default the PV warps load and store the last 8 of the 16 K rows per lane (KP = 8; the same mma sequence and
     // reductions, so bitwise); LLAMA_FATTN_VERIFY_STREAM_KP=0 restores T4's kernel (all of K in the QK warps)
     static const bool kp8 = [] { const char * e = getenv("LLAMA_FATTN_VERIFY_STREAM_KP"); return !e || atoi(e) != 0; }();
     constexpr size_t nbytes_shared = sizeof(fvs::smem_t);

@@ -1,5 +1,5 @@
 // QSA block selection inputs from the incremental block table (llama_qsa_blk_table) against the full scan
-// (llama_qsa_input_scan) [TAG_QSA_HOST_META]: random cache histories (appends, rollbacks, prefix reuse,
+// (llama_qsa_input_scan): random cache histories (appends, rollbacks, prefix reuse,
 // sequence copies, keeps, shifts, divisions, restores, clears, copies of the cells), every call compared
 // byte for byte. The table may decline a call (the scan then serves it) but must never differ.
 //

@@ -120,7 +120,7 @@ struct llama_context {
     void set_embeddings_nextn(bool value, bool masked);
     void set_embeddings_layer_inp(uint32_t lid, bool enable);
 
-    // [TAG_DFLASH2_FEAT_DEV] (ticket 0101), see llama_cparams::layer_inp_dev_rows and inject_dev
+    // See llama_cparams::layer_inp_dev_rows and inject_dev
     void    set_embeddings_layer_inp_dev(int32_t n_rows_max);
     int32_t get_embeddings_layer_inp_dev_rows() const { return layer_inp_dev_n; }
     void    set_inject_dev(bool value) { cparams.inject_dev = value; }
@@ -239,7 +239,7 @@ private:
 
     void output_reorder();
 
-    // [TAG_LOGITS_DEFER] copy the raw logits still on the device into the host rows (all of them when row < 0)
+    // copy the raw logits still on the device into the host rows (all of them when row < 0)
     void logits_dev_fetch(int64_t row);
 
     // map the output row index `i` to batch index
@@ -268,7 +268,7 @@ public:
 
     bool set_sampler(llama_seq_id seq_id, llama_sampler * sampler);
 
-    // [TAG_SPEC_PIPELINE] see llama-ext.h
+    // see llama-ext.h
     void pipe_select(int32_t slot);
     void pipe_decode_flags(bool async, bool backup);
     void pipe_drain();
@@ -330,7 +330,7 @@ private:
     // populated when cparams.output_layer_inp[il] is true
     std::vector<buffer_view<float>> embd_layer_inp;
 
-    // [TAG_DFLASH2_FEAT_DEV] (ticket 0101) the last decode's enabled layer-input tensors (ascending layer order) and their backend, when
+    // the last decode's enabled layer-input tensors (ascending layer order) and their backend, when
     // it was one ubatch of layer_inp_dev_n <= cparams.layer_inp_dev_rows tokens; layer_inp_dev_n = 0 when they went to the host instead
     std::vector<ggml_tensor *> layer_inp_dev_t;
     ggml_backend_t             layer_inp_dev_backend = nullptr;
@@ -355,7 +355,7 @@ private:
 
     sampling_info sampling;
 
-    // [TAG_LOGITS_DEFER] when every output of a ubatch has a backend sampler, its raw logits are not copied to the
+    // when every output of a ubatch has a backend sampler, its raw logits are not copied to the
     // host. the last such ubatch's logits stay in its graph output until the next decode, and are fetched per row on
     // request (get_logits_full_ith). earlier ubatches are copied before the next ubatch runs. LLAMA_BACKEND_TOPK=0
     // restores the upstream behaviour, where those raw logits are never copied.
@@ -395,10 +395,10 @@ private:
 
     bool sched_need_reserve = true;
 
-    // [TAG_SPEC_PIPE_LOOSE] the QSA record of the latest decode's graph (llama_pipe_rows_independent)
+    // the QSA record of the latest decode's graph (llama_pipe_rows_independent)
     llm_graph_result::qsa_record qsa_last;
 
-    // [TAG_SPEC_PIPELINE] the second output slot. the live members above (logits ... output_swaps, buf_output) hold
+    // the second output slot. the live members above (logits ... output_swaps, buf_output) hold
     // slot pipe_live, pipe_alt holds the other one; pipe_select swaps them
     struct pipe_output_slot {
         ggml_backend_buffer_ptr         buf_output;
@@ -448,7 +448,7 @@ private:
     ggml_backend_t       pipe_ev_be[2]  = {nullptr, nullptr};
     bool                 pipe_ev_set[2] = {false, false};
 
-    // a device copy of the older slot's deferred raw logits ([TAG_LOGITS_DEFER]), which the next decode's graph
+    // a device copy of the older slot's deferred raw logits, which the next decode's graph
     // output overwrites
     ggml_context_ptr        pipe_side_ctx;
     ggml_backend_buffer_ptr pipe_side_buf;
@@ -484,7 +484,7 @@ private:
 
     llm_graph_result * gf_res_prev_active = nullptr;
 
-    // ticket 0101: a DFlash2 draft's injection decodes (embd batches of target features) run on a scheduler and graph arena of their
+    // a DFlash2 draft's injection decodes (embd batches of target features) run on a scheduler and graph arena of their
     // own (swapped in for the decode), so the injection graph and the draft pass graph stay allocated side by side and each is reused
     // round after round instead of both being rebuilt and re-allocated every round. LLAMA_DFLASH2_INJ_ARENA=0 turns it off
     ggml_backend_sched_ptr sched_inj;

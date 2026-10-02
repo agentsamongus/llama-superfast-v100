@@ -114,7 +114,7 @@ LLAMA_API void llama_set_embeddings_layer_inp(struct llama_context * ctx, uint32
 // LLAMA_API float * llama_get_embeddings(struct llama_context * ctx);
 LLAMA_API float * llama_get_embeddings_layer_inp(struct llama_context * ctx, uint32_t lid);
 
-// [TAG_DFLASH2_FEAT_DEV] (ticket 0101) a target keeps the enabled layer inputs of a decode that is one ubatch of at most n_rows_max
+// a target keeps the enabled layer inputs of a decode that is one ubatch of at most n_rows_max
 // tokens on the device instead of copying them to the host (0 = never); llama_get_embeddings_layer_inp_dev_rows gives the last
 // decode's row count held so (0: they went to the host, read them with llama_get_embeddings_layer_inp)
 LLAMA_API void    llama_set_embeddings_layer_inp_dev     (struct llama_context * ctx, int32_t n_rows_max);
@@ -131,15 +131,15 @@ LLAMA_API llama_context * llama_get_ctx_other(struct llama_context * ctx);
 
 LLAMA_API int32_t llama_model_dflash_selector_top_k(const struct llama_model * model);
 
-// (ticket 0101) every layer of the model attends through a sliding window (llama_model_n_swa)
+// every layer of the model attends through a sliding window (llama_model_n_swa)
 LLAMA_API bool llama_model_all_swa(const struct llama_model * model);
 
-// [TAG_DRAFT_VOCAB] give a draft model a row subset of its LM head: the rows ids[0..n) of output, copied to the head's
+// give a draft model a row subset of its LM head: the rows ids[0..n) of output, copied to the head's
 // own device, so its graphs compute logits over those tokens only (the draft's backend samplers map rows back to ids).
 // Call before the draft context's first decode. Returns false, and changes nothing, if the head does not allow it.
 LLAMA_API bool llama_model_set_head_subset(const struct llama_model * model, const llama_token * ids, int32_t n);
 
-// [TAG_DRAFT_VOCAB] (ticket 0101) the same for a DFlash2 draft, which borrows the target's head: the rows ids[0..n) of head_model's
+// the same for a DFlash2 draft, which borrows the target's head: the rows ids[0..n) of head_model's
 // output, or, when head_file is set, of the output.weight tensor in that GGUF file (e.g. the MTP draft's Q3_K head), on the draft's
 // device and repacked by its routes. The draft's graph then computes its logits over those tokens only and maps its candidates back
 // to token ids. Call before the draft context's first decode. Returns false, and changes nothing, if it cannot.
@@ -158,7 +158,7 @@ LLAMA_API uint32_t        llama_model_target_layer_ids_n(const struct llama_mode
 LLAMA_API uint32_t llama_model_get_tok_embd(const struct llama_model * model, float * out);
 
 //
-// [TAG_SPEC_PIPELINE] pipelined speculative decoding (ticket 0055)
+// pipelined speculative decoding
 //
 
 // the output slot (0 or 1) the next decode writes, and the output getters read. a decode into one slot leaves the
@@ -181,16 +181,16 @@ LLAMA_API void llama_pipe_hold_next(struct llama_context * ctx, bool hold);
 LLAMA_API bool llama_pipe_resume   (struct llama_context * ctx);
 LLAMA_API void llama_pipe_abort    (struct llama_context * ctx);
 
-// [TAG_SPEC_PIPE_LOOSE] (ticket 0068) whether every row of the latest decode (one ubatch) depends only on its own
+// whether every row of the latest decode (one ubatch) depends only on its own
 // prefix and the batch size, not on the other tokens of its batch: its graph did not gather the QSA union
-// (LLAMA_QSA_UNION, qwen4exp-qsa-compact.h), the one place a verify row reads its batch's other tokens (tickets 0055,
-// 0063). with n_more > 0 the answer also covers every decode of the same shape while the cache view grows by up to
+// (LLAMA_QSA_UNION, qwen4exp-qsa-compact.h), the one place a verify row reads its batch's other tokens.
+// with n_more > 0 the answer also covers every decode of the same shape while the cache view grows by up to
 // n_more cells: true when the union is off, or when that view stays within the padded selection, the width below
 // which the compact path, and so the union, never applies. a graph without QSA attention is independent
 LLAMA_API bool llama_pipe_rows_independent(struct llama_context * ctx, int64_t n_more);
 
 //
-// [TAG_SPEC_REJECTION] rejection sampling for the MTP draft (ticket 0069)
+// rejection sampling for the MTP draft
 //
 
 // one uniform draw in [0, 1) from the random number generator of the chain's last sampler, when that is dist: the

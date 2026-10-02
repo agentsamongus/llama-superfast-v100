@@ -82,7 +82,7 @@ struct llama_cross {
     // the output embeddings from the encoder as a ggml tensor
     // TODO: this needs more work to be correct, for now copy the embeddings data to host memory
     //       ref: https://github.com/ggml-org/llama.cpp/pull/11213#discussion_r1969892524
-    //ggml_tensor * t_embd = nullptr;
+    // ggml_tensor * t_embd = nullptr;
 
     int64_t n_embd = 0;
     int64_t n_enc  = 0;
@@ -936,7 +936,7 @@ public:
     ggml_tensor * t_inp_tokens  = nullptr;
     ggml_tensor * t_inp_embd    = nullptr; // [n_embd_inp, n_tokens]
     ggml_tensor * t_logits      = nullptr;
-    ggml_tensor * t_logits_ids  = nullptr; // [TAG_DRAFT_VOCAB] t_logits covers a subset of the vocabulary: row -> token id
+    ggml_tensor * t_logits_ids  = nullptr; // t_logits covers a subset of the vocabulary: row -> token id
     ggml_tensor * t_embd        = nullptr;
     ggml_tensor * t_embd_pooled = nullptr;
     ggml_tensor * t_h_nextn     = nullptr; // [n_embd, n_outputs] hidden state before final output norm
@@ -951,7 +951,7 @@ public:
     std::vector<llm_graph_input_ptr> inputs;
     std::vector<llm_graph_fused_node> fused_nodes;
 
-    // [TAG_SPEC_PIPE_LOOSE] how this graph's QSA attention treats a small batch (ticket 0068, llama_pipe_rows_independent):
+    // how this graph's QSA attention treats a small batch (llama_pipe_rows_independent):
     // union_env: a single-sequence verify batch would gather the union once its view is wider than the padded
     // selection (wp); union_used: some layer of this graph gathers it; n_kv: the widest view, wp: the narrowest padded
     // selection; sel: the selection's width once the view is wide enough (a narrower view clamps it to the view)

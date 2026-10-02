@@ -1,11 +1,11 @@
-// Test for the Volta tensor-core path of the dense multi-token K-quant GEMVs (ticket 0053, LLAMA_MMVQ_TC).
+// Test for the Volta tensor-core path of the dense multi-token K-quant GEMVs (LLAMA_MMVQ_TC).
 //
 // Runs on the first CUDA device; on a device without the path every product takes dp4a and the checks still hold.
 //  1. accuracy: a Q5_K product large enough for the path, 3 to 8 tokens, against an fp64 reference
 //  2. range guard: activations with |x| up to 1e6 give finite outputs of the same relative accuracy
 //  3. non-finite input: a token holding inf or NaN is computed as the dp4a path computes it (compared with a
 //     child process run with LLAMA_MMVQ_TC=0), and the other tokens are unaffected
-//  4. the q8_1 sharing hazard (LLAMA_Q8_SHARE, ticket 0042): a tensor-core product reads the same activations as
+//  4. the q8_1 sharing hazard (LLAMA_Q8_SHARE): a tensor-core product reads the same activations as
 //     two dp4a products and runs first. It quantizes nothing, so it must neither lead nor join their q8_1 group:
 //     the dp4a outputs must equal their outputs run alone, bit for bit, and the plan must count 2 consumers.
 

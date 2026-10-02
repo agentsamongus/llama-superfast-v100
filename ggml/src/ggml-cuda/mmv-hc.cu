@@ -13,7 +13,7 @@
 
 static constexpr int HC_BLOCK_SIZE    = 256;
 // mul_mat_vec_f serves BF16 up to 8 columns on these devices with a block size that depends only on the row
-// length, so each column's arithmetic is the same at every width (ticket 0074: 5-token verifies had fallen
+// length, so each column's arithmetic is the same at every width (5-token verifies had fallen
 // back to it at 2.4x the time, and lost the fused epilogue)
 static constexpr int HC_MAX_NCOLS_DST = 8;
 
@@ -34,7 +34,7 @@ static constexpr int HC_LONG_PAIRS  = HC_LONG_K/2/HC_BLOCK_SIZE;
 
 // n_embd-wide rows (2560): mul_mat_vec_f picks the same 256-thread block (5 pairs per thread), so the
 // long-row kernel reproduces it too. These are the untagged BF16 products: the router, the indexer
-// projections, GDN alpha/beta, the shared-expert gate and PLE (ticket 0028).
+// projections, GDN alpha/beta, the shared-expert gate and PLE.
 static constexpr int HC_EMBD_K      = 2560;
 static constexpr int HC_EMBD_PAIRS  = HC_EMBD_K/2/HC_BLOCK_SIZE;
 
@@ -214,7 +214,7 @@ mul_mat_vec_hc_long(
         x, y, dst, nrows, stride_row, stride_col_y, stride_col_dst, ep, blockIdx.x);
 }
 
-// Several n_embd-wide products of one shared activation in one launch (ticket 0046, F8): block b belongs to
+// Several n_embd-wide products of one shared activation in one launch (F8): block b belongs to
 // the matrix whose block range holds it and runs exactly the block that matrix's own launch would run. A row's
 // result depends only on its own weights and the activations, never on the block layout, so every output is
 // bit-identical to the separate launches.
@@ -347,7 +347,7 @@ bool ggml_cuda_mul_mat_vec_hc(ggml_backend_cuda_context & ctx, const ggml_tensor
     return true;
 }
 
-// LLAMA_BF16_GEMV=0 keeps mul_mat_vec_f for the untagged n_embd-wide BF16 products (ticket 0028).
+// LLAMA_BF16_GEMV=0 keeps mul_mat_vec_f for the untagged n_embd-wide BF16 products.
 static bool ggml_cuda_bf16_gemv_enabled() {
     static const bool enabled = [] {
         const char * e = getenv("LLAMA_BF16_GEMV");

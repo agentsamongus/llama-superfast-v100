@@ -5,7 +5,7 @@
 #include "llama-kv-cache-iswa.h"
 #include "llama-context.h"
 
-// [TAG_DFLASH2_FEAT_DEV] (ticket 0101) the injection's features, copied device to device from the target's layer inputs of its last
+// the injection's features, copied device to device from the target's layer inputs of its last
 // decode (llama_context::copy_layer_inp_dev), one slot per extracted layer: feat is [n_embd, n_tokens, n_slots]
 class llm_graph_input_dflash_feat : public llm_graph_input_i {
 public:
@@ -508,7 +508,7 @@ static void build_dflash2_selector(llm_graph_context & g, const llama_model & mo
     ggml_tensor * unary       = ggml_reshape_2d(ctx0,
             ggml_get_rows(ctx0, logits_rows, candidates), top_k, n_tokens);
     if (model.head_subset_ids && res->t_logits->ne[0] == model.head_subset_ids->ne[0]) {
-        // [TAG_DRAFT_VOCAB] (ticket 0101) the logits cover the head subset's rows: the candidates are rows, mapped to token ids here,
+        // the logits cover the head subset's rows: the candidates are rows, mapped to token ids here,
         // so the codebooks' get_rows, the lattice and the walk read token ids
         const int64_t n_sub = model.head_subset_ids->ne[0];
         candidates = ggml_reshape_2d(ctx0,
@@ -624,7 +624,7 @@ llama_model_dflash::graph<false>::graph(const llama_model & model, const llm_gra
     if (ubatch.embd) {
         ggml_tensor * inp_target = nullptr;
         if (cparams.inject_dev && cparams.ctx_other) {
-            // [TAG_DFLASH2_FEAT_DEV] (ticket 0101) the target's layer inputs, still on the device, copied slot by slot into a device
+            // the target's layer inputs, still on the device, copied slot by slot into a device
             // input (on the target's stream, which this context's stream waits for) and interleaved into [n_embd_inp, n_tokens]
             const int64_t n_slots = (int64_t) model.target_layer_ids.size();
             GGML_ASSERT(n_slots > 0 && n_embd_inp % n_slots == 0);
@@ -819,7 +819,7 @@ llama_model_dflash::graph<false>::graph(const llama_model & model, const llm_gra
     }
 
     if (model.head_subset_w && model.dflash_selector_hidden && !model.d2t) {
-        // [TAG_DRAFT_VOCAB] (ticket 0101) the logits over the draft vocabulary's rows only; the selector maps its candidates
+        // the logits over the draft vocabulary's rows only; the selector maps its candidates
         // back to token ids through head_subset_ids
         cur = ggml_mul_mat(ctx0, model.head_subset_w, cur);
     } else {
